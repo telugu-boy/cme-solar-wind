@@ -10,6 +10,8 @@ from pathlib import Path
 from datetime import date as Date
 from typing import Literal
 
+import cr_icme_vis
+
 def get_omni_filepath(date: Date, res: Literal["1min"] | Literal["5min"]):
     omni_folder_name = None
     omni_folder = None
@@ -17,13 +19,13 @@ def get_omni_filepath(date: Date, res: Literal["1min"] | Literal["5min"]):
         omni_folder_name = "omni_hro2_1min"
     elif res == "5min":
         omni_folder_name = "omni_hro2_5min"
-    omni_folder = Path(omni_folder_name)
+    omni_folder = Path("data/"+omni_folder_name)
     
     year_str = date.strftime("%Y")
     cdf_filename = f"{omni_folder_name}_{date.strftime('%Y%m01')}_v01.cdf"
     return omni_folder / year_str / cdf_filename
 
-def get_omni_dataset_in_range(start: Date, end: Date, res: Literal["1min"] | Literal["5min"]):
+def get_omni_dataset(start: Date, end: Date, res: Literal["1min"] | Literal["5min"]):
     """
     `start` and `end` should contain the year and month; day is ignored.
 
@@ -57,7 +59,7 @@ def get_omni_dataset_in_range(start: Date, end: Date, res: Literal["1min"] | Lit
 
 # we now want to plot this data for icmes
 # we are looking at the magnetic field B, particle density, particle velocity
-def plot_B_density_velocity(ds: xr.Dataset):
+def plot_omni_B_density_velocity(ds: xr.Dataset):
     datetime_cols = (
         "YR", "Day", "HR", "Minute"
     )
@@ -110,10 +112,12 @@ def plot_B_density_velocity(ds: xr.Dataset):
 
 def main():
     omni_start = Date(2000, 1, 1)
-    omni_end = Date(2000, 12, 31)
-    ds = get_omni_dataset_in_range(omni_start, omni_end, "5min")
+    omni_end = Date(2000, 2, 1)
 
-    plot_B_density_velocity(ds)
+    omni_ds = get_omni_dataset(omni_start, omni_end, "5min")
+    #print(omni_ds.data_vars)
+
+    plot_omni_B_density_velocity(omni_ds)
 
 if __name__ == "__main__":
     main()

@@ -1,10 +1,11 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-from datetime import datetime
+from datetime import datetime, date as Date
+from typing import Optional
 
-def main():
-    cr_icmes = pd.read_csv("icme_catalog.csv")
+def get_cr_icme_dataframe(start:Optional[Date]=None, end:Optional[Date]=None):
+    cr_icmes = pd.read_csv("data/icme_catalog.csv")
 
     time_cols = ['disturbance_datetime_ut', 'icme_plasma_field_start_ut', 'icme_plasma_field_end_ut']
 
@@ -18,6 +19,17 @@ def main():
     # Convert numeric columns
     cols_to_int = ['comp_start_hrs', 'comp_end_hrs', 'mc_start_hrs', 'mc_end_hrs']
     cr_icmes[cols_to_int] = cr_icmes[cols_to_int].apply(pd.to_numeric, errors='coerce').astype('Int64')
+
+    if start is not None and end is not None:
+        start_ts = pd.to_datetime(start).tz_localize('UTC')
+        end_ts = pd.to_datetime(end).tz_localize('UTC')
+
+        cr_icmes = cr_icmes[cr_icmes['disturbance_datetime_ut'].between(start_ts, end_ts)]
+
+    return cr_icmes
+
+def main():
+    cr_icmes = get_cr_icme_dataframe()
 
     # 3. Filter to Solar Cycle (May 1996 - Nov 2008)
     cutoff1 = pd.Timestamp("1996-05-01", tz="UTC")
