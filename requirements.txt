@@ -3,9 +3,10 @@ numpy
 scipy
 pandas
 
-#to scrape c&r icme list
+#to scrape c&r icme list and omni data
 beautifulsoup4
 requests
+tqdm
 
 # library for netcdf files for minute data
 xarray

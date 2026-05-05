@@ -101,7 +101,7 @@ def main():
     rows = parse_table(soup)
     print(f"Parsed {len(rows)} data rows.")
 
-    out_file = "icme_catalog.csv"
+    out_file = "data/icme_catalog.csv"
     with open(out_file, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=COLUMNS)
         writer.writeheader()
