@@ -2,6 +2,7 @@ matplotlib
 numpy
 scipy
 pandas
+scikit-learn
 
 #to scrape c&r icme list and omni data
 beautifulsoup4
