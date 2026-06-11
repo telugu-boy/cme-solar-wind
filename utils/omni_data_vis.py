@@ -10,7 +10,7 @@ from pathlib import Path
 from datetime import date as Date
 from typing import Literal
 
-import vis.cr_icme_vis as cr_icme_vis
+import cr_icme_vis as cr_icme_vis
 
 def get_omni_filepath(date: Date, res: Literal["1min"] | Literal["5min"]):
     omni_folder_name = None

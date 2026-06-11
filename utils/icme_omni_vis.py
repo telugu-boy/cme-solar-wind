@@ -10,8 +10,8 @@ from pathlib import Path
 from datetime import date as Date
 from typing import Literal
 
-import vis.cr_icme_vis as cr_icme_vis
-import vis.omni_data_vis as omni_data_vis
+import cr_icme_vis as cr_icme_vis
+import omni_data_vis as omni_data_vis
 
 # CLAUDE
 def helper_centred_diff(values: np.ndarray, dt_seconds: float, kernel_radius: int = 1) -> np.ndarray:

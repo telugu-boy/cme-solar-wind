@@ -12,3 +12,6 @@ tqdm
 # library for netcdf files for minute data
 xarray
 cdflib@git+https://github.com/lasp/cdflib.git
+
+# parquet support
+pyarrow

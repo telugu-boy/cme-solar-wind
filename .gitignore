@@ -273,3 +273,6 @@ __marimo__/
 omni_hro2_1min/
 omni_hro2_5min/
 data/
+
+# TSLib
+Time-Series-Library/

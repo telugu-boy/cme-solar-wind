@@ -6,9 +6,9 @@ import matplotlib.dates as mdates
 from scipy.signal import welch, spectrogram
 from datetime import date as Date
 
-import vis.omni_data_vis as omni_data_vis
-import vis.cr_icme_vis as cr_icme_vis
-import vis.icme_omni_vis as icme_vis
+import omni_data_vis as omni_data_vis
+import cr_icme_vis as cr_icme_vis
+import icme_omni_vis as icme_vis
 
 def strip_tz(ds: xr.Dataset) -> xr.Dataset:
     """Safely removes timezone info from the 'time' coordinate for xarray math."""

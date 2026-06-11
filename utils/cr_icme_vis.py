@@ -1,3 +1,5 @@
+# physically informed patch size (27days) and inter-patch would smooth icmes, intra-patch would amplify icmes
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt

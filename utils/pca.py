@@ -9,8 +9,8 @@ from datetime import date as Date
 import random
 from typing import Literal, Optional
 
-import vis.omni_data_vis as omni_data_vis
-import vis.cr_icme_vis as cr_icme_vis
+import omni_data_vis as omni_data_vis
+import cr_icme_vis as cr_icme_vis
 
 
 def create_feature_matrix(
