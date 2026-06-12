@@ -140,5 +140,15 @@ def main():
     omni_solarmax1_df = omni_full_df.loc[omni_start:omni_end]
     cr_icme_df = get_cr_icme_dataframe(omni_start, omni_end)
 
+    feature_cols = ["F", "BX_GSE", "BY_GSE", "BZ_GSE", "flow_speed", "proton_density", "T", "Pressure"]
+
+    train_dataset = OmniWindowDataset(
+        omni_df = omni_solarmax1_df,
+        cr_icmes=cr_icme_df,
+        feature_cols=feature_cols,
+        window_size=(60//5*24), # 288 5-min data points, so 24 hour intervals
+        stride=1,
+    )
+
 if __name__ == "__main__":
     main()
