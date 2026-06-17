@@ -565,9 +565,10 @@ def pretrain(
         weight_decay=cfg["weight_decay"],
     )
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", factor=0.5, patience=cfg["lr_patience"], verbose=True
+        optimizer, mode="min", factor=0.5, patience=cfg["lr_patience"], #verbose=True
     )
 
+    last_lr = float('inf')
     best_val_loss = float("inf")
     patience_counter = 0
 
@@ -577,6 +578,11 @@ def pretrain(
         va = run_one_epoch(model, val_loader,   None,      device, train=False)
         scheduler.step(va["total"])
         elapsed = time.time() - t0
+
+        current_lr = optimizer.param_groups[0]["lr"]
+        if current_lr != last_lr:
+            print(f"📉 Learning rate reduced from {last_lr} to {current_lr}")
+            last_lr = current_lr
 
         loss_parts = (
             f"total={tr['total']:.4f}  forecast={tr['forecast']:.4f}  "
