@@ -15,3 +15,8 @@ cdflib@git+https://github.com/lasp/cdflib.git
 
 # parquet support
 pyarrow
+
+# hugging face models
+transformers
+torch
+xgboost
