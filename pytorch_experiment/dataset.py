@@ -133,8 +133,9 @@ def main():
     # FULL omni data - Jan 1996 to April 2026
     # Solar Max 1 Omni data - May 1996 to Dec 2008
     # Solar Min 1 Omni data - Feb 2001 to Dec 2012
-    omni_start = Date(2001, 2, 1)
-    omni_end = Date(2012, 12, 1)
+    # Two full solar cycles - May 1996 to Jan 2020
+    omni_start = Date(1996, 5, 1)
+    omni_end = Date(2020, 1, 1)
 
     omni_full_df = read_omni_cache(Path("data/omni_cache_5min_full.parquet"))
     omni_solarmax1_df = omni_full_df.loc[omni_start:omni_end]
