@@ -688,7 +688,8 @@ def pretrain(
         if va["total"] < best_val_loss:
             best_val_loss = va["total"]
             patience_counter = 0
-            torch.save(model.state_dict(), best_ckpt)
+            raw_model = model._orig_mod if hasattr(model, "_orig_mod") else model
+            torch.save(raw_model.state_dict(), best_ckpt)
             print(f"           ✓ saved checkpoint  val_loss={best_val_loss:.4f}")
         else:
             patience_counter += 1
@@ -899,7 +900,7 @@ def main(cfg: dict = CFG) -> None:
     cr_icmes  = get_cr_icme_dataframe(
         cfg["omni_start"], cfg["omni_end"], cfg["icme_catalog_path"]
     )
-    print(f"[data] OMNI shape={omni_df.shape}  ICME events={len(cr_icmes)}")
+    print(f"[data] OMNI shape={omni_df.shape}  ICME events={l`en(cr_icmes)}")
 
     # ── 2. Feature engineering ───────────────────────────────────────────────
     omni_df = engineer_features(omni_df, cfg)
@@ -917,7 +918,15 @@ def main(cfg: dict = CFG) -> None:
 
     # ── 4. Build & pretrain backbone ─────────────────────────────────────────
     model = build_backbone(cfg, pos_weight=pos_weight)
-    best_ckpt = pretrain(model, train_ds, val_ds, cfg)
+    #best_ckpt = pretrain(model, train_ds, val_ds, cfg)
+
+    # load existing checkpoint
+    ckpt_dir = Path(cfg["checkpoint_dir"])
+    best_ckpt = str(ckpt_dir / "patchtsmixer_icme_best.pt")
+    state_dict = torch.load(best_ckpt, map_location=cfg['device'])
+    # strip _orig_mod. prefix added by torch.compile
+    state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
+    model.load_state_dict(state_dict)
 
     # ── 5. Extract latent representations ───────────────────────────────────
     level = cfg["classification_level"]
