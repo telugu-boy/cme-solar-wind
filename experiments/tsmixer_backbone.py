@@ -9,7 +9,7 @@ PatchTSMixerModel (not ForPrediction / ForPretraining) as the encoder.
 Two custom pretraining heads are attached:
   ┌──────────────────────────────────────────────────────────────────┐
   │  PatchTSMixerModel (backbone)                                    │
-  │       ↓   last_hidden_state  (B, num_patches, C, d_model)        │
+  │       ↓   last_hidden_state  (B, C, num_patches, d_model)        │
   │  ┌────┴──────────────────────────────┐                           │
   │  │ PretrainForecastHead              │   MSE vs future_values    │
   │  │   always active during pretrain   │                           │
@@ -70,7 +70,7 @@ class PretrainForecastHead(nn.Module):
 
     Input
     -----
-    hidden_state : (B, num_patches, C, d_model)
+    hidden_state : (B, C, num_patches, d_model)
 
     Output
     ------
@@ -89,9 +89,9 @@ class PretrainForecastHead(nn.Module):
         self.projection = nn.Linear(P * D, T)
 
     def forward(self, hidden_state: torch.Tensor) -> torch.Tensor:
-        B, P, C, D = hidden_state.shape
-        # (B, P, C, D) → (B, C, P, D) → (B, C, P*D)
-        x = hidden_state.permute(0, 2, 1, 3).reshape(B, C, P * D)
+        B, C, P, D = hidden_state.shape
+        # (B, C, P, D) → (B, C, P*D)
+        x = hidden_state.reshape(B, C, P * D)
         x = self.dropout(x)
         # (B, C, T) → (B, T, C)
         return self.projection(x).permute(0, 2, 1)
@@ -110,7 +110,7 @@ class PretrainAnomalyHead(nn.Module):
 
     Input
     -----
-    hidden_state : (B, num_patches, C, d_model)
+    hidden_state : (B, C, num_patches, d_model)
 
     Output
     ------
@@ -130,8 +130,8 @@ class PretrainAnomalyHead(nn.Module):
         )
 
     def forward(self, hidden_state: torch.Tensor) -> torch.Tensor:
-        # (B, P, C, D) — mean over C → (B, P, D)
-        x = hidden_state.mean(dim=2)
+        # (B, C, P, D) — mean over C (dim=1) → (B, P, D)
+        x = hidden_state.mean(dim=1)
         x = self.dropout(x)
         # (B, P, 1) → (B, P)
         return self.mlp(x).squeeze(-1)
@@ -146,7 +146,7 @@ class ICMEBackboneOutput:
     """Typed container for PatchTSMixerICMEBackbone.forward() results."""
 
     last_hidden_state: torch.Tensor
-    """(B, num_patches, C, d_model) — raw patch embeddings from the backbone."""
+    """(B, C, num_patches, d_model) — raw patch embeddings from the backbone."""
 
     total_loss: Optional[torch.Tensor] = None
     """Weighted sum of forecast_loss and anomaly_loss (if both present)."""
@@ -265,7 +265,7 @@ class PatchTSMixerICMEBackbone(nn.Module):
             observed_mask=observed_mask,
             return_dict=True,
         )
-        hidden = enc.last_hidden_state  # (B, P, C, D)
+        hidden = enc.last_hidden_state  # (B, C, P, D)
 
         # ── Forecast head ────────────────────────────────────────────────
         forecast_loss: Optional[torch.Tensor] = None
@@ -333,15 +333,15 @@ class PatchTSMixerICMEBackbone(nn.Module):
             observed_mask=observed_mask,
             return_dict=True,
         )
-        h = enc.last_hidden_state  # (B, P, C, D)
-        B, P, C, D = h.shape
+        h = enc.last_hidden_state  # (B, C, P, D)
+        B, C, P, D = h.shape
 
         if pool == "mean":
-            return h.mean(dim=1).reshape(B, C * D)
+            return h.mean(dim=2).reshape(B, C * D)
         if pool == "max":
-            return h.amax(dim=1).reshape(B, C * D)
+            return h.amax(dim=2).reshape(B, C * D)
         if pool == "flatten":
-            return h.reshape(B, P * C * D)
+            return h.reshape(B, C * P * D)
         raise ValueError(f"pool must be 'mean', 'max', or 'flatten', got {pool!r}")
 
     # ─────────────────────────────────────────────────────────────────────
@@ -367,8 +367,8 @@ class PatchTSMixerICMEBackbone(nn.Module):
                 observed_mask=observed_mask,
                 return_dict=True,
             )
-        h = enc.last_hidden_state  # (B, P, C, D)
-        return h.mean(dim=2)       # (B, P, D)
+        h = enc.last_hidden_state  # (B, C, P, D)
+        return h.mean(dim=1)       # (B, P, D)
 
     # ─────────────────────────────────────────────────────────────────────
     def freeze_backbone(self) -> None:

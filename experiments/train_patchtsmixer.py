@@ -41,7 +41,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import Dataset
 from sklearn.preprocessing import RobustScaler
 from sklearn.metrics import (
     classification_report,
@@ -121,16 +121,16 @@ CFG: dict[str, Any] = {
 
     # ── Training ───────────────────────────────────────────────────────────
     "pretrain_epochs":   50,
-    "batch_size":        64,
-    "learning_rate":     1e-3,
+    "batch_size":        128,
+    "learning_rate":     3e-3,
     "weight_decay":      1e-4,
     "lr_patience":       5,           # ReduceLROnPlateau patience
     "early_stop_patience": 10,
-    "num_workers":       4,
+    "num_workers":       0,           # Set to 0 since we now bypass the DataLoader pipeline
     "device":            "cuda" if torch.cuda.is_available() else "cpu",
 
     # ── Dataset sliding window ─────────────────────────────────────────────
-    "window_stride":     12,          # 1-hour stride for window sampling
+    "window_stride":     24,          # 1-hour stride for window sampling
 
     # ── Downstream classifiers ─────────────────────────────────────────────
     "latent_pool":       "mean",      # "mean", "max", "flatten"
@@ -304,7 +304,7 @@ def select_feature_cols(df: pd.DataFrame, cfg: dict) -> list[str]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Dataset
+# Dataset & Vectorized GPU Loader
 # ─────────────────────────────────────────────────────────────────────────────
 
 class OmniPatchDataset(Dataset):
@@ -372,44 +372,97 @@ class OmniPatchDataset(Dataset):
             if gap <= 10:
                 self.window_starts.append(s)
 
-    # ─────────────────────────────────────────────────────────────────────
-    def _patch_labels(self, window_start: int) -> np.ndarray:
-        """Binary ICME label for each patch in the context window."""
-        labels = np.zeros(self.num_patches, dtype=np.float32)
-        for p in range(self.num_patches):
-            s = window_start + p * self.patch_stride
-            e = s + self.patch_length
-            frac = self.timestep_labels[s:e].mean()
-            if frac >= self.overlap_threshold:
-                labels[p] = 1.0
-        return labels
+        # ── Precompute patch labels (Vectorized cumulative sum) ───────────
+        cumsum_labels = np.zeros(len(self.timestep_labels) + 1, dtype=np.float32)
+        cumsum_labels[1:] = np.cumsum(self.timestep_labels)
+
+        self.precomputed_patch_labels = np.zeros(
+            (len(self.window_starts), self.num_patches), dtype=np.float32
+        )
+
+        if len(self.window_starts) > 0:
+            window_starts_arr = np.array(self.window_starts, dtype=np.int32)
+            for p in range(self.num_patches):
+                p_starts = window_starts_arr + p * self.patch_stride
+                p_ends = p_starts + self.patch_length
+                sums = cumsum_labels[p_ends] - cumsum_labels[p_starts]
+                fracs = sums / self.patch_length
+                self.precomputed_patch_labels[:, p] = (fracs >= self.overlap_threshold).astype(np.float32)
 
     def __len__(self) -> int:
         return len(self.window_starts)
 
     def __getitem__(self, idx: int):
+        # Fallback method if called directly outside the VectorizedGPULoader pipeline
         s = self.window_starts[idx]
         ctx_e = s + self.context_length
         fut_e = ctx_e + self.prediction_length
 
         past_values   = torch.from_numpy(self.data[s    : ctx_e])   # (L, C)
         future_values = torch.from_numpy(self.data[ctx_e : fut_e])  # (T, C)
-        patch_labels  = torch.from_numpy(self._patch_labels(s))     # (P,)
+        patch_labels  = torch.from_numpy(self.precomputed_patch_labels[idx])     # (P,)
 
         return past_values, future_values, patch_labels
 
     # ─────────────────────────────────────────────────────────────────────
     def icme_patch_ratio(self) -> float:
         """Fraction of ICME patches across all valid windows (for pos_weight)."""
-        total = pos = 0
-        for s in self.window_starts:
-            labels = self._patch_labels(s)
-            total += len(labels)
-            pos   += int(labels.sum())
+        pos = int(self.precomputed_patch_labels.sum())
+        total = self.precomputed_patch_labels.size
         neg = total - pos
         ratio = neg / max(pos, 1)
         print(f"[dataset] ICME patch ratio  pos={pos}  neg={neg}  pos_weight≈{ratio:.1f}")
         return float(ratio)
+
+
+class VectorizedGPULoader:
+    """
+    Direct GPU batch generator using PyTorch multi-dimensional matrix index broadcasting.
+    
+    Bypasses standard DataLoader thread loop serialization to deliver 0.000s batch loading.
+    """
+    def __init__(self, dataset: OmniPatchDataset, cfg: dict, shuffle: bool = True, device="cuda"):
+        self.device = device
+        self.batch_size = cfg["batch_size"]
+        self.context_length = cfg["context_length"]
+        self.prediction_length = cfg["prediction_length"]
+        self.shuffle = shuffle
+        
+        # Move underlying arrays to GPU/Target device upfront (size ~150MB total)
+        self.data = torch.from_numpy(dataset.data).float().to(device)
+        self.window_starts = torch.tensor(dataset.window_starts, dtype=torch.long, device=device)
+        self.patch_labels = torch.from_numpy(dataset.precomputed_patch_labels).float().to(device)
+        
+        # Index offsets for vectorization
+        self.past_offsets = torch.arange(self.context_length, device=device)
+        self.future_offsets = torch.arange(self.context_length, self.context_length + self.prediction_length, device=device)
+        
+        self.num_samples = len(self.window_starts)
+
+    def __iter__(self):
+        if self.shuffle:
+            perm = torch.randperm(self.num_samples, device=self.device)
+            starts = self.window_starts[perm]
+            labels = self.patch_labels[perm]
+        else:
+            starts = self.window_starts
+            labels = self.patch_labels
+            
+        for i in range(0, self.num_samples, self.batch_size):
+            b_starts = starts[i : i + self.batch_size]
+            b_labels = labels[i : i + self.batch_size]
+            
+            # Broadcast mapping to create batch indices on the GPU
+            past_idx = b_starts.unsqueeze(1) + self.past_offsets
+            future_idx = b_starts.unsqueeze(1) + self.future_offsets
+            
+            past_values = self.data[past_idx]
+            future_values = self.data[future_idx]
+            
+            yield past_values, future_values, b_labels
+
+    def __len__(self):
+        return (self.num_samples + self.batch_size - 1) // self.batch_size
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -488,42 +541,83 @@ def make_datasets(
 
 def run_one_epoch(
     model: PatchTSMixerICMEBackbone,
-    loader: DataLoader,
+    loader: VectorizedGPULoader,
     optimizer: Optional[torch.optim.Optimizer],
     device: str,
     train: bool = True,
+    grad_scaler = None,
 ) -> dict[str, float]:
     model.train(train)
-    totals: dict[str, float] = {
-        "total": 0.0, "forecast": 0.0, "anomaly": 0.0
-    }
+    totals: dict[str, float] = {"total": 0.0, "forecast": 0.0, "anomaly": 0.0}
     n = 0
+
+    # ── Timing buckets ──────────────────────────────────────────
+    t_iter   = 0.0   # time inside __iter__ yielding the batch
+    t_fwd    = 0.0   # forward pass
+    t_bwd    = 0.0   # backward + step
+    t_item   = 0.0   # .item() calls (forces GPU sync)
+    n_batches = 0
+    # ────────────────────────────────────────────────────────────
 
     ctx = torch.enable_grad() if train else torch.no_grad()
     with ctx:
+        t_iter_start = time.perf_counter()
         for past, future, p_labels in loader:
-            past     = past.to(device)
-            future   = future.to(device)
-            p_labels = p_labels.to(device)
+            t_iter += time.perf_counter() - t_iter_start
 
-            out = model(past, future_values=future, patch_labels=p_labels)
-
+            # Forward
+            t0 = time.perf_counter()
             if train:
                 optimizer.zero_grad()
-                out.total_loss.backward()
-                nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                optimizer.step()
 
+            with torch.cuda.amp.autocast():
+                out = model(past, future_values=future, patch_labels=p_labels)
+
+            if device != "cpu":
+                torch.cuda.synchronize()
+            t_fwd += time.perf_counter() - t0
+
+            # Backward
+            t0 = time.perf_counter()
+
+            if train:
+                grad_scaler.scale(out.total_loss).backward()
+                grad_scaler.unscale_(optimizer)
+                nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                grad_scaler.step(optimizer)
+                grad_scaler.update()
+
+            if device != "cpu":
+                torch.cuda.synchronize()
+            t_bwd += time.perf_counter() - t0
+
+            # .item() calls
+            t0 = time.perf_counter()
             bs = past.size(0)
-            totals["total"]    += out.total_loss.item()    * bs
+            totals["total"] += out.total_loss.item() * bs
             if out.forecast_loss is not None:
                 totals["forecast"] += out.forecast_loss.item() * bs
             if out.anomaly_loss is not None:
-                totals["anomaly"]  += out.anomaly_loss.item()  * bs
+                totals["anomaly"] += out.anomaly_loss.item() * bs
+            if device != "cpu":
+                torch.cuda.synchronize()
+            t_item += time.perf_counter() - t0
+
             n += bs
+            n_batches += 1
+            t_iter_start = time.perf_counter()
+
+    print(
+        f"  [timing {'train' if train else 'val  '}]  "
+        f"batches={n_batches}  "
+        f"iter={t_iter:.2f}s  "
+        f"fwd={t_fwd:.2f}s  "
+        f"bwd={t_bwd:.2f}s  "
+        f"item={t_item:.2f}s  "
+        f"total={t_iter+t_fwd+t_bwd+t_item:.2f}s"
+    )
 
     return {k: v / max(n, 1) for k, v in totals.items()}
-
 
 def pretrain(
     model: PatchTSMixerICMEBackbone,
@@ -543,21 +637,17 @@ def pretrain(
     device = cfg["device"]
     model  = model.to(device)
 
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=cfg["batch_size"],
-        shuffle=True,
-        num_workers=cfg["num_workers"],
-        pin_memory=(device == "cuda"),
-        drop_last=True,
-    )
-    val_loader = DataLoader(
-        val_ds,
-        batch_size=cfg["batch_size"] * 2,
-        shuffle=False,
-        num_workers=cfg["num_workers"],
-        pin_memory=(device == "cuda"),
-    )
+    scaler = torch.cuda.amp.GradScaler()
+
+    try:
+        model = torch.compile(model)
+        print("[pretrain] torch.compile enabled")
+    except Exception:
+        print("[pretrain] torch.compile unavailable, continuing without")
+
+    # Initialize Vectorized GPU Loaders directly
+    train_loader = VectorizedGPULoader(train_ds, cfg, shuffle=True, device=device)
+    val_loader   = VectorizedGPULoader(val_ds,   cfg, shuffle=False, device=device)
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -574,8 +664,8 @@ def pretrain(
 
     for epoch in range(1, cfg["pretrain_epochs"] + 1):
         t0 = time.time()
-        tr = run_one_epoch(model, train_loader, optimizer, device, train=True)
-        va = run_one_epoch(model, val_loader,   None,      device, train=False)
+        tr = run_one_epoch(model, train_loader, optimizer, device, train=True, grad_scaler=scaler)
+        va = run_one_epoch(model, val_loader,   None,      device, train=False, grad_scaler = None)
         scheduler.step(va["total"])
         elapsed = time.time() - t0
 
@@ -636,21 +726,15 @@ def extract_features(
     model.eval()
     model = model.to(device)
 
-    loader = DataLoader(
-        dataset,
-        batch_size=cfg["batch_size"] * 2,
-        shuffle=False,
-        num_workers=cfg["num_workers"],
-        pin_memory=(device == "cuda"),
-    )
+    # Use VectorizedGPULoader for accelerated extraction
+    loader = VectorizedGPULoader(dataset, cfg, shuffle=False, device=device)
 
     X_list: list[np.ndarray] = []
     y_list: list[np.ndarray] = []
 
     with torch.no_grad():
         for past, _, p_labels in loader:
-            past     = past.to(device)
-            p_labels = p_labels.numpy()                          # (B, P)
+            p_labels = p_labels.cpu().numpy()                          # (B, P)
 
             if level == "patch":
                 # (B, P, D) per-patch embeddings, channel-pooled
@@ -687,16 +771,17 @@ def extract_raw_features(
         y shape : (n_windows,)
     """
     X_list, y_list = [], []
-    loader = DataLoader(
-        dataset, batch_size=512, shuffle=False, num_workers=cfg["num_workers"]
-    )
+    device = cfg["device"]
+    # Use VectorizedGPULoader for baseline extraction speedups
+    loader = VectorizedGPULoader(dataset, cfg, shuffle=False, device=device)
+    
     PL = cfg["patch_length"]
     PS = cfg["patch_stride"]
     P  = dataset.num_patches
 
     for past, _, p_labels in loader:
-        past     = past.numpy()        # (B, L, C)
-        p_labels = p_labels.numpy()   # (B, P)
+        past     = past.cpu().numpy()        # (B, L, C)
+        p_labels = p_labels.cpu().numpy()   # (B, P)
         B, L, C  = past.shape
 
         if level == "patch":
@@ -799,6 +884,9 @@ def build_backbone(cfg: dict, pos_weight: Optional[float] = None) -> PatchTSMixe
 
 
 def main(cfg: dict = CFG) -> None:
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cuda.matmul.allow_tf32 = True
+    
     results_dir = Path(cfg["results_dir"])
     results_dir.mkdir(parents=True, exist_ok=True)
 
