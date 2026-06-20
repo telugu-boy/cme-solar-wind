@@ -276,3 +276,7 @@ data/
 
 # TSLib
 Time-Series-Library/
+
+# torch outputs
+checkpoints/
+results/

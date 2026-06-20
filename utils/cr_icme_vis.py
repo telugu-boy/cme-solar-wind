@@ -130,6 +130,7 @@ def main():
     log_flag = True
 
     compare_distribution_entropy(cr_icmes)
+    get_icme_duration_summary(cr_icmes)
     return
     print(get_icme_duration_summary(cr_icmes, log_flag))
     plot_icme_duration_histogram(cr_icmes, log_flag)
