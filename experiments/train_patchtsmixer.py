@@ -900,7 +900,7 @@ def main(cfg: dict = CFG) -> None:
     cr_icmes  = get_cr_icme_dataframe(
         cfg["omni_start"], cfg["omni_end"], cfg["icme_catalog_path"]
     )
-    print(f"[data] OMNI shape={omni_df.shape}  ICME events={l`en(cr_icmes)}")
+    print(f"[data] OMNI shape={omni_df.shape}  ICME events={len(cr_icmes)}")
 
     # ── 2. Feature engineering ───────────────────────────────────────────────
     omni_df = engineer_features(omni_df, cfg)
