@@ -63,7 +63,7 @@ CFG: dict[str, Any] = {
     "use_cos_cone":          True,   # Bx / |B|
     "use_sin_cone":          False,  # optional (orange in spreadsheet)
     "use_rms_B":             True,   # rolling RMS of |B|
-    "use_f10_7":             True,   # f10.7 solar index (column name: f10.7_index)
+    "use_f10_7":             False,   # f10.7 solar index (column name: f10.7_index)
     "use_carrington_wave":   True,   # sin/cos of 27.27-day rotation
     "rms_window":            12,     # 1 hour at 5-min resolution
 
@@ -96,7 +96,7 @@ CFG: dict[str, Any] = {
 
     # ── Training ───────────────────────────────────────────────────────────
     "pretrain_epochs":   50,
-    "batch_size":        128,
+    "batch_size":        256,
     "learning_rate":     3e-3,
     "weight_decay":      1e-4,
     "lr_patience":       5,           # ReduceLROnPlateau patience
