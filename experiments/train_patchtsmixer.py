@@ -104,7 +104,10 @@ CFG: dict[str, Any] = {
     "device":            "cuda" if torch.cuda.is_available() else "cpu",
 
     # ── Dataset sliding window ─────────────────────────────────────────────
-    "window_stride":     24,          # 1-hour stride for window sampling
+    "window_stride":     24,          # 2-hour stride for window sampling
+
+    # ── Downstream classifiers default settings ────────────────────────────
+    "classification_level": "patch",  # "patch" or "window"
 
     # ── Output ─────────────────────────────────────────────────────────────
     "checkpoint_dir": "checkpoints",
@@ -302,6 +305,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_layers",      type=int,   default=CFG["num_layers"])
     parser.add_argument("--no_anomaly_head", action="store_true")
     parser.add_argument("--univariate",      action="store_true")
+    parser.add_argument("--level",           type=str,   default=CFG["classification_level"], choices=["patch", "window"])
     args = parser.parse_args()
 
     CFG["context_length"]   = args.context_length
@@ -314,5 +318,6 @@ if __name__ == "__main__":
     CFG["num_layers"]       = args.num_layers
     CFG["use_anomaly_head"] = not args.no_anomaly_head
     CFG["univariate_test"]  = args.univariate
+    CFG["classification_level"] = args.level
 
     main(CFG)
