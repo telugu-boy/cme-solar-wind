@@ -28,7 +28,7 @@ import torch
 import torch.nn as nn
 from transformers import PatchTSMixerConfig
 
-from loaders import (
+from .loaders import (
     read_omni_cache,
     get_cr_icme_dataframe,
     engineer_features,
@@ -37,7 +37,7 @@ from loaders import (
     VectorizedGPULoader,
     OmniPatchDataset,
 )
-from tsmixer_backbone import PatchTSMixerICMEBackbone
+from .tsmixer_backbone import PatchTSMixerICMEBackbone
 
 CFG: dict[str, Any] = {
     # ── Data ──────────────────────────────────────────────────────────────

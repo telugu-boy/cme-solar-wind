@@ -27,7 +27,7 @@ except ImportError:
     HAS_XGBOOST = False
     warnings.warn("xgboost not installed; XGBoost classifiers will be skipped.")
 
-from loaders import (
+from .loaders import (
     read_omni_cache,
     get_cr_icme_dataframe,
     engineer_features,
@@ -35,7 +35,7 @@ from loaders import (
     VectorizedGPULoader,
     OmniPatchDataset,
 )
-from tsmixer_backbone import PatchTSMixerICMEBackbone
+from .tsmixer_backbone import PatchTSMixerICMEBackbone
 
 
 def extract_features(
