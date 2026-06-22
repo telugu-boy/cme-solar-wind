@@ -289,8 +289,8 @@ def main(cfg: dict = CFG) -> None:
         "feature_cols": feature_cols,
         "scaler": scaler,
     }
-    torch.save(save_package, results_dir / "backbone_final.pt")
-    print(f"[results] Backbone saved to {results_dir / 'backbone_final.pt'}")
+    torch.save(save_package, results_dir / "patchtsmixer_backbone_final.pt")
+    print(f"[results] Backbone saved to {results_dir / 'patchtsmixer_backbone_final.pt'}")
 
 
 if __name__ == "__main__":
