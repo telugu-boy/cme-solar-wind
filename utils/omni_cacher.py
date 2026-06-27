@@ -66,8 +66,8 @@ def append_to_omni_cache(new_start, new_end, res="5min", cache_path=None):
     return combined
 
 def main():
-    omni_start = Date(2001, 2, 1)
-    omni_end = Date(2012, 12, 1)
+    omni_start = Date(1996, 5, 1)
+    omni_end = Date(2020, 1, 1)
     omni_df = build_omni_cache(omni_start, omni_end, res="5min")
 
 if __name__ == "__main__":

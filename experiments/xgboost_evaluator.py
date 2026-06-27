@@ -16,7 +16,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.metrics import classification_report, precision_recall_fscore_support
+from sklearn.metrics import (
+    classification_report, 
+    precision_recall_fscore_support, 
+    roc_auc_score, 
+    average_precision_score,
+    log_loss
+)
 from transformers import PatchTSMixerConfig
 
 try:
@@ -25,6 +31,13 @@ try:
 except ImportError:
     HAS_XGBOOST = False
     raise ImportError("xgboost is required to run this script.")
+
+# Try importing CuPy to resolve XGBoost evaluation set data-mismatches natively on GPU
+try:
+    import cupy as cp
+    HAS_CUPY = True
+except ImportError:
+    HAS_CUPY = False
 
 from .loaders import (
     read_omni_cache,
@@ -127,9 +140,22 @@ def fit_xgb(X_train: np.ndarray, y_train: np.ndarray, cfg: dict):
     params["scale_pos_weight"] = scale_pos_weight
     
     xgb = XGBClassifier(**params)
+    
+    device = cfg.get("device", "cpu")
+    if "cuda" in str(params.get("device", "")) or "cuda" in str(device):
+        if HAS_CUPY:
+            X_train_dev = cp.array(X_train, dtype=cp.float32)
+            y_train_dev = cp.array(y_train, dtype=cp.int32)
+        else:
+            X_train_dev = torch.tensor(X_train, device=device, dtype=torch.float32)
+            y_train_dev = torch.tensor(y_train.astype(int), device=device)
+    else:
+        X_train_dev = X_train
+        y_train_dev = y_train.astype(int)
+    
     xgb.fit(
-        X_train, y_train.astype(int),
-        eval_set=[(X_train, y_train.astype(int))],
+        X_train_dev, y_train_dev,
+        eval_set=[(X_train_dev, y_train_dev)],
         verbose=False,
     )
     return xgb
@@ -140,20 +166,59 @@ def evaluate_classifier(
     X_test: np.ndarray,
     y_test: np.ndarray,
     label: str,
+    device: str = "cpu",
 ) -> dict[str, float]:
     if clf is None:
         return {}
-    y_pred = clf.predict(X_test)
+    
+    if "cuda" in str(clf.get_params().get("device", "")) or "cuda" in str(device):
+        if HAS_CUPY:
+            X_test_dev = cp.array(X_test, dtype=cp.float32)
+        else:
+            X_test_dev = torch.tensor(X_test, device=device, dtype=torch.float32)
+    else:
+        X_test_dev = X_test
+
+    # Generate both hard labels and continuous probabilities
+    y_pred = clf.predict(X_test_dev)
+    y_prob = clf.predict_proba(X_test_dev)[:, 1]
+    
+    # Safely unpack device arrays (CuPy, Torch CUDA, or NumPy) back to CPU
+    if hasattr(y_pred, "get"): 
+        y_pred = y_pred.get()
+    elif hasattr(y_pred, "cpu"): 
+        y_pred = y_pred.cpu().numpy()
+
+    if hasattr(y_prob, "get"): 
+        y_prob = y_prob.get()
+    elif hasattr(y_prob, "cpu"): 
+        y_prob = y_prob.cpu().numpy()
+
+    # Calculate metrics
+    y_test_int = y_test.astype(int)
     prec, rec, f1, _ = precision_recall_fscore_support(
-        y_test.astype(int), y_pred, average="binary", zero_division=0
+        y_test_int, y_pred, average="binary", zero_division=0
     )
+    roc_auc = roc_auc_score(y_test_int, y_prob)
+    pr_auc = average_precision_score(y_test_int, y_prob)
+    test_loss = log_loss(y_test_int, y_prob)
+
     print(f"\n── {label} ──")
     print(classification_report(
-        y_test.astype(int), y_pred,
+        y_test_int, y_pred,
         target_names=["ambient", "ICME"],
         zero_division=0,
     ))
-    return {"precision": prec, "recall": rec, "f1": f1}
+    print(f"ROC AUC: {roc_auc:.4f} | PR AUC (AP): {pr_auc:.4f} | Test LogLoss: {test_loss:.4f}")
+
+    return {
+        "precision": prec, 
+        "recall": rec, 
+        "f1": f1, 
+        "roc_auc": roc_auc, 
+        "pr_auc": pr_auc,
+        "logloss": test_loss
+    }
 
 
 def build_backbone_from_config(cfg: dict, checkpoint_state: dict) -> PatchTSMixerICMEBackbone:
@@ -219,8 +284,10 @@ def main():
         "subsample": 0.8,
         "colsample_bytree": 0.8,
         "use_label_encoder": False,
-        "eval_metric": "logloss",
-        "device": "cuda",             # Processes millions of samples instantly via GPU
+        # The pos_weight is a 27 to 1 ratio of true negatives to true positives for patch-level
+        # and a 13 to 1 ratio for window-level ICME classification
+        "eval_metric": ["logloss", "auc", "aucpr"], 
+        "device": "cuda",             
         "random_state": 42,
     }
 
@@ -270,21 +337,23 @@ def main():
     print("=" * 60)
 
     results = {}
-    results["XGB on latent"] = evaluate_classifier(xgb_lat, X_te_lat, y_te,     "XGB on latent representation")
-    results["XGB on raw"]    = evaluate_classifier(xgb_raw, X_te_raw, y_te_raw, "XGB on raw data (baseline)")
+    results["XGB on latent"] = evaluate_classifier(xgb_lat, X_te_lat, y_te,     "XGB on latent representation", device=device)
+    results["XGB on raw"]    = evaluate_classifier(xgb_raw, X_te_raw, y_te_raw, "XGB on raw data (baseline)", device=device)
 
-    print("\n── F1 summary ──────────────────────────────────────────")
+    print("\n── Summary Metrics ──────────────────────────────────────────")
     for name, metrics in results.items():
         if metrics:
-            print(f"  {name:<30}  F1={metrics['f1']:.4f}  "
-                  f"P={metrics['precision']:.4f}  R={metrics['recall']:.4f}")
+            print(f"  {name:<20}  F1={metrics['f1']:.4f}  "
+                  f"P={metrics['precision']:.4f}  R={metrics['recall']:.4f}  "
+                  f"ROC_AUC={metrics['roc_auc']:.4f}  PR_AUC={metrics['pr_auc']:.4f}  "
+                  f"LogLoss={metrics['logloss']:.4f}")
 
-    results_df = pd.DataFrame(results).T
-    results_dir = Path(cfg["results_dir"])
-    results_dir.mkdir(parents=True, exist_ok=True)
-    out_path = results_dir / f"f1_comparison_{level}.csv"
-    results_df.to_csv(out_path)
-    print(f"\n[results] Export completed successfully. Saved to: {out_path}")
+    # results_df = pd.DataFrame(results).T
+    # results_dir = Path(cfg["results_dir"])
+    # results_dir.mkdir(parents=True, exist_ok=True)
+    # out_path = results_dir / f"metrics_comparison_{level}.csv"
+    # results_df.to_csv(out_path)
+    # print(f"\n[results] Export completed successfully. Saved to: {out_path}")
 
 
 if __name__ == "__main__":
