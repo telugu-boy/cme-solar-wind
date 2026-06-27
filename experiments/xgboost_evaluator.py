@@ -32,13 +32,6 @@ except ImportError:
     HAS_XGBOOST = False
     raise ImportError("xgboost is required to run this script.")
 
-# Try importing CuPy to resolve XGBoost evaluation set data-mismatches natively on GPU
-try:
-    import cupy as cp
-    HAS_CUPY = True
-except ImportError:
-    HAS_CUPY = False
-
 from .loaders import (
     read_omni_cache,
     get_cr_icme_dataframe,
@@ -143,12 +136,9 @@ def fit_xgb(X_train: np.ndarray, y_train: np.ndarray, cfg: dict):
     
     device = cfg.get("device", "cpu")
     if "cuda" in str(params.get("device", "")) or "cuda" in str(device):
-        if HAS_CUPY:
-            X_train_dev = cp.array(X_train, dtype=cp.float32)
-            y_train_dev = cp.array(y_train, dtype=cp.int32)
-        else:
-            X_train_dev = torch.tensor(X_train, device=device, dtype=torch.float32)
-            y_train_dev = torch.tensor(y_train.astype(int), device=device)
+        # Pure PyTorch CUDA tensor casting — zero overhead, zero-copy interface with XGBoost GPU
+        X_train_dev = torch.tensor(X_train, device=device, dtype=torch.float32)
+        y_train_dev = torch.tensor(y_train.astype(int), device=device)
     else:
         X_train_dev = X_train
         y_train_dev = y_train.astype(int)
@@ -172,10 +162,7 @@ def evaluate_classifier(
         return {}
     
     if "cuda" in str(clf.get_params().get("device", "")) or "cuda" in str(device):
-        if HAS_CUPY:
-            X_test_dev = cp.array(X_test, dtype=cp.float32)
-        else:
-            X_test_dev = torch.tensor(X_test, device=device, dtype=torch.float32)
+        X_test_dev = torch.tensor(X_test, device=device, dtype=torch.float32)
     else:
         X_test_dev = X_test
 
@@ -183,15 +170,10 @@ def evaluate_classifier(
     y_pred = clf.predict(X_test_dev)
     y_prob = clf.predict_proba(X_test_dev)[:, 1]
     
-    # Safely unpack device arrays (CuPy, Torch CUDA, or NumPy) back to CPU
-    if hasattr(y_pred, "get"): 
-        y_pred = y_pred.get()
-    elif hasattr(y_pred, "cpu"): 
+    # Unpack PyTorch CUDA tensors back to standard CPU NumPy arrays for Sklearn compliance
+    if hasattr(y_pred, "cpu"): 
         y_pred = y_pred.cpu().numpy()
-
-    if hasattr(y_prob, "get"): 
-        y_prob = y_prob.get()
-    elif hasattr(y_prob, "cpu"): 
+    if hasattr(y_prob, "cpu"): 
         y_prob = y_prob.cpu().numpy()
 
     # Calculate metrics
@@ -209,7 +191,7 @@ def evaluate_classifier(
         target_names=["ambient", "ICME"],
         zero_division=0,
     ))
-    print(f"ROC AUC: {roc_auc:.4f} | PR AUC (AP): {pr_auc:.4f} | Test LogLoss: {test_loss:.4f}")
+    print(f"AUC ROC: {roc_auc:.4f} | AUC PRC: {pr_auc:.4f} | Test LogLoss: {test_loss:.4f}")
 
     return {
         "precision": prec, 
@@ -274,7 +256,9 @@ def main():
     if args.level is not None:
         cfg["classification_level"] = args.level
 
-    cfg["latent_pool"] = "mean"
+    # need to use max pooling or else patches with icme will get averaged out
+    # in the window level classifier
+    cfg["latent_pool"] = "max"
     
     # XGBoost GPU Parameters Configuration
     cfg["xgb_params"] = {
@@ -284,8 +268,6 @@ def main():
         "subsample": 0.8,
         "colsample_bytree": 0.8,
         "use_label_encoder": False,
-        # The pos_weight is a 27 to 1 ratio of true negatives to true positives for patch-level
-        # and a 13 to 1 ratio for window-level ICME classification
         "eval_metric": ["logloss", "auc", "aucpr"], 
         "device": "cuda",             
         "random_state": 42,
