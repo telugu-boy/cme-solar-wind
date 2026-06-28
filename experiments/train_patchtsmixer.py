@@ -54,7 +54,7 @@ CFG: dict[str, Any] = {
 
     # ── Feature selection ─────────────────────────────────────────────────
     # Core raw features (always included)
-    "raw_feature_cols": ["F", "BX_GSE", "BY_GSE", "BZ_GSE",
+    "raw_feature_cols": ["F", # "BX_GSE", "BY_GSE", "BZ_GSE",
                          "flow_speed", "proton_density"],
 
     # Engineered features (set to False to ablate)
@@ -63,7 +63,7 @@ CFG: dict[str, Any] = {
     "use_cos_cone":          True,   # Bx / |B|
     "use_sin_cone":          False,  # optional (orange in spreadsheet)
     "use_rms_B":             True,   # rolling RMS of |B|
-    "use_f10_7":             False,   # f10.7 solar index (column name: f10.7_index)
+    "use_f10_7":             True,   # f10.7 solar index (column name: f10.7_index)
     "use_carrington_wave":   True,   # sin/cos of 27.27-day rotation
     "rms_window":            12,     # 1 hour at 5-min resolution
 
@@ -80,14 +80,14 @@ CFG: dict[str, Any] = {
     "d_model":           64,
     "num_layers":        6,
     "expansion_factor":  2,
-    "dropout":           0.2,
-    "head_dropout":      0.1,
+    "dropout":           0.4,
+    "head_dropout":      0.2,
     "mode":              "mix_channel",  # "common_channel" or "mix_channel"
     "gated_attn":        True,
     "self_attn":         False,          # tiny self-attn across patches (optional)
 
     # ── Pretraining heads ──────────────────────────────────────────────────
-    "use_anomaly_head":       False,
+    "use_anomaly_head":       True,
     "forecast_loss_weight":   1.0,
     "anomaly_loss_weight":    2.0,    # upweight anomaly to match experiment focus
 
@@ -196,11 +196,15 @@ def pretrain(
     model  = model.to(device)
     scaler = torch.cuda.amp.GradScaler()
 
-    try:
-        model = torch.compile(model)
-        print("[pretrain] torch.compile enabled")
-    except Exception:
-        print("[pretrain] torch.compile unavailable, continuing without")
+    import sys
+    if sys.platform != "win32":
+        try:
+            model = torch.compile(model)
+            print("[pretrain] torch.compile enabled")
+        except Exception:
+            print("[pretrain] torch.compile unavailable, continuing without")
+    else:
+        print("[pretrain] torch.compile skipped on Windows to avoid Triton dependencies")
 
     train_loader = VectorizedGPULoader(train_ds, cfg, shuffle=True, device=device)
     val_loader   = VectorizedGPULoader(val_ds,   cfg, shuffle=False, device=device)
@@ -227,7 +231,7 @@ def pretrain(
 
         current_lr = optimizer.param_groups[0]["lr"]
         if current_lr != last_lr:
-            print(f"📉 Learning rate reduced from {last_lr} to {current_lr}")
+            print(f"[lr] Learning rate reduced from {last_lr} to {current_lr}")
             last_lr = current_lr
 
         loss_parts = (
@@ -246,14 +250,14 @@ def pretrain(
             patience_counter = 0
             raw_model = model._orig_mod if hasattr(model, "_orig_mod") else model
             torch.save(raw_model.state_dict(), best_ckpt)
-            print(f"           ✓ saved checkpoint  val_loss={best_val_loss:.4f}")
+            print(f"           * saved checkpoint  val_loss={best_val_loss:.4f}")
         else:
             patience_counter += 1
             if patience_counter >= cfg["early_stop_patience"]:
                 print(f"[pretrain] early stopping at epoch {epoch}.")
                 break
 
-    print(f"[pretrain] best val_loss={best_val_loss:.4f} — loading checkpoint.")
+    print(f"[pretrain] best val_loss={best_val_loss:.4f} - loading checkpoint.")
     raw_model = model._orig_mod if hasattr(model, "_orig_mod") else model
     raw_model.load_state_dict(torch.load(best_ckpt, map_location=device))
     return best_ckpt
@@ -303,7 +307,7 @@ if __name__ == "__main__":
     parser.add_argument("--lr",              type=float, default=CFG["learning_rate"])
     parser.add_argument("--d_model",         type=int,   default=CFG["d_model"])
     parser.add_argument("--num_layers",      type=int,   default=CFG["num_layers"])
-    parser.add_argument("--no_anomaly_head", action="store_true")
+    parser.add_argument("--anomaly_head",    action="store_true", help="Enable anomaly head")
     parser.add_argument("--univariate",      action="store_true")
     parser.add_argument("--level",           type=str,   default=CFG["classification_level"], choices=["patch", "window"])
     args = parser.parse_args()
@@ -316,7 +320,7 @@ if __name__ == "__main__":
     CFG["learning_rate"]    = args.lr
     CFG["d_model"]          = args.d_model
     CFG["num_layers"]       = args.num_layers
-    CFG["use_anomaly_head"] = not args.no_anomaly_head
+    CFG["use_anomaly_head"] = args.anomaly_head
     CFG["univariate_test"]  = args.univariate
     CFG["classification_level"] = args.level
 

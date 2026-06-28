@@ -20,6 +20,38 @@ from sklearn.preprocessing import RobustScaler
 CARRINGTON_PERIOD_DAYS = 27.2753   # synodic Carrington rotation period
 
 
+def load_f107_index(f107_path: Path) -> pd.Series:
+    """
+    Read the daily f10.7 index from the format:
+    YEAR DOY Hour f10.7_index
+    e.g., 1996 122  0  68.9
+    """
+    import datetime
+    if not f107_path.exists():
+        raise FileNotFoundError(f"f10.7 index file not found at {f107_path}")
+    
+    dates = []
+    values = []
+    with open(f107_path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split()
+            if len(parts) >= 4:
+                try:
+                    yr = int(parts[0])
+                    doy = int(parts[1])
+                    val = float(parts[3])
+                    dt = datetime.datetime.strptime(f"{yr} {doy:03d}", "%Y %j")
+                    dates.append(dt)
+                    values.append(val)
+                except ValueError:
+                    continue
+    
+    return pd.Series(values, index=pd.to_datetime(dates), name="f10.7_index")
+
+
 def read_omni_cache(cache_path: Path) -> pd.DataFrame:
     if not cache_path.exists():
         raise FileNotFoundError(f"No cache file found at {cache_path}")
@@ -32,6 +64,16 @@ def read_omni_cache(cache_path: Path) -> pd.DataFrame:
             raise ValueError("No DatetimeIndex and no Timestamp column found.")
     if df.index.tz is not None:
         df.index = df.index.tz_localize(None)
+
+    # Load and merge f10.7 index if present
+    f107_path = cache_path.parent / "omni_daily_f10.7_index.lst"
+    if f107_path.exists():
+        print(f"[data] Loading and merging daily f10.7 index from {f107_path}")
+        f107_series = load_f107_index(f107_path)
+        df = df.join(f107_series, on=df.index.normalize())
+    else:
+        print(f"[data] Warning: f10.7 index file not found at {f107_path}")
+
     return df
 
 
@@ -262,7 +304,7 @@ class OmniPatchDataset(Dataset):
         total = self.precomputed_patch_labels.size
         neg = total - pos
         ratio = neg / max(pos, 1)
-        print(f"[dataset] ICME patch ratio  pos={pos}  neg={neg}  pos_weight≈{ratio:.1f}")
+        print(f"[dataset] ICME patch ratio  pos={pos}  neg={neg}  pos_weight~{ratio:.1f}")
         return float(ratio)
 
 

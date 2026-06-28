@@ -270,9 +270,8 @@ __marimo__/
 .streamlit/secrets.toml
 
 # Project-specific files
-omni_hro2_1min/
-omni_hro2_5min/
-data/
+omni_hro2*/
+omni_cache*
 
 # TSLib
 Time-Series-Library/
