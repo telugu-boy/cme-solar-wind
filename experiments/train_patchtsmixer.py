@@ -73,7 +73,7 @@ CFG: dict[str, Any] = {
     # ── Model architecture ────────────────────────────────────────────────
     # Context window: 32h at 5-min resolution = 32 * 12 = 384 timesteps
     # Ablation options from spreadsheet: 32h, 36h, 48h
-    "context_length":   384,        # 16h (experiments have shown that we must concentrate the window, try 384//3 = 12 too)
+    "context_length":   384//2,        # 384//2 = 16h (experiments have shown that we must concentrate the window, try 384//3 = 12 too)
     "prediction_length": 96,           # 8h ahead
     "patch_length":      16,           # 80 min per patch → 12 patches per 16h window
     "patch_stride":      16,           # non-overlapping patches
@@ -84,12 +84,12 @@ CFG: dict[str, Any] = {
     "head_dropout":      0.2,
     "mode":              "mix_channel",  # "common_channel" or "mix_channel"
     "gated_attn":        True,
-    "self_attn":         False,          # tiny self-attn across patches (optional)
+    "self_attn":         True,          # tiny self-attn across patches (optional)
 
     # ── Pretraining heads ──────────────────────────────────────────────────
     "use_anomaly_head":       True,
-    "forecast_loss_weight":   0.0,
-    "anomaly_loss_weight":    1.0,    # upweight anomaly to match experiment focus
+    "forecast_loss_weight":   1.0,
+    "anomaly_loss_weight":    2.0,    # upweight anomaly to match experiment focus
     # inter-patch anoamly head may have a 1:3 weighting with above,
     # so if anomaly_loss_weight is 3.0 this may be 1.0 or 1.5.
 
@@ -98,7 +98,7 @@ CFG: dict[str, Any] = {
 
     # ── Training ───────────────────────────────────────────────────────────
     "pretrain_epochs":   50,
-    "batch_size":        256,
+    "batch_size":        512,
     "learning_rate":     3e-3,
     "weight_decay":      1e-4,
     "lr_patience":       5,           # ReduceLROnPlateau patience
