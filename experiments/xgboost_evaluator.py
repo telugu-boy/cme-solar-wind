@@ -139,9 +139,9 @@ def fit_xgb(X_train: np.ndarray, y_train: np.ndarray, cfg: dict):
     
     device = cfg.get("device", "cpu")
     if "cuda" in str(params.get("device", "")) or "cuda" in str(device):
-        # Pure PyTorch CUDA tensor casting — zero overhead, zero-copy interface with XGBoost GPU
-        X_train_dev = torch.tensor(X_train, device=device, dtype=torch.float32)
-        y_train_dev = torch.tensor(y_train.astype(int), device=device)
+        # Pure PyTorch CUDA tensor casting — zero-copy interface with XGBoost GPU
+        X_train_dev = torch.as_tensor(X_train, device=device, dtype=torch.float32)
+        y_train_dev = torch.as_tensor(y_train.astype(int), device=device)
     else:
         X_train_dev = X_train
         y_train_dev = y_train.astype(int)
@@ -165,7 +165,7 @@ def evaluate_classifier(
         return {}
     
     if "cuda" in str(clf.get_params().get("device", "")) or "cuda" in str(device):
-        X_test_dev = torch.tensor(X_test, device=device, dtype=torch.float32)
+        X_test_dev = torch.as_tensor(X_test, device=device, dtype=torch.float32)
     else:
         X_test_dev = X_test
 
@@ -291,11 +291,14 @@ def main():
 
     X_tr_lat, y_tr = extract_features(model, train_ds, cfg, level=level)
     X_va_lat, y_va = extract_features(model, val_ds,   cfg, level=level)
-    X_te_lat, y_te = extract_features(model, test_ds,  cfg, level=level)
-
-    # Retain full dataset sequence for downstream fitting
+    
+    # Concatenate and immediately delete to prevent massive OOM memory spikes
     X_tr_all = np.concatenate([X_tr_lat, X_va_lat])
     y_tr_all = np.concatenate([y_tr,    y_va])
+    del X_tr_lat, X_va_lat, y_tr, y_va
+    import gc; gc.collect()
+
+    X_te_lat, y_te = extract_features(model, test_ds,  cfg, level=level)
 
     print(
         f"[downstream] Latent dimensions: train={X_tr_all.shape}  test={X_te_lat.shape}  "
@@ -305,10 +308,13 @@ def main():
     # Raw features baseline setup
     X_tr_raw, y_tr_raw = extract_raw_features(train_ds, cfg, level=level)
     X_va_raw, y_va_raw = extract_raw_features(val_ds,   cfg, level=level)
-    X_te_raw, y_te_raw = extract_raw_features(test_ds,  cfg, level=level)
-
+    
     X_tr_raw_all = np.concatenate([X_tr_raw, X_va_raw])
     y_tr_raw_all  = np.concatenate([y_tr_raw, y_va_raw])
+    del X_tr_raw, X_va_raw, y_tr_raw, y_va_raw
+    gc.collect()
+
+    X_te_raw, y_te_raw = extract_raw_features(test_ds,  cfg, level=level)
 
     print("\n[downstream] Fitting XGBoost classifiers on GPU...")
     xgb_lat = fit_xgb(X_tr_all,     y_tr_all,     cfg)

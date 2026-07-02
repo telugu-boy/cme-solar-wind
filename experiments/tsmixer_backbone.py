@@ -108,8 +108,7 @@ class PretrainAnomalyHead(nn.Module):
     """
     Binary ICME / non-ICME classifier, applied independently per patch.
 
-    Aggregates across channels (mean) then uses a small MLP to produce
-    a scalar logit per patch.
+    Uses a small parameter-efficient MLP to produce a scalar logit per patch.
 
     Input
     -----
@@ -124,7 +123,8 @@ class PretrainAnomalyHead(nn.Module):
         super().__init__()
         C = config.num_input_channels
         D = config.d_model
-        hidden = max(C * D // 2, 8)
+        # Use a fixed compact hidden layer to avoid parameter explosion
+        hidden = 64
         self.dropout = nn.Dropout(head_dropout)
         self.mlp = nn.Sequential(
             nn.Linear(C * D, hidden),
@@ -149,8 +149,8 @@ class PretrainAnomalyHead(nn.Module):
 class PretrainWindowAnomalyHead(nn.Module):
     """
     Regression head that predicts the fraction of patches in the window
-    that are ICME patches. This applies regularization to the inter-patch
-    (temporal) mixing part of the backbone.
+    that are ICME patches. Uses a patch-wise projection followed by a small
+    MLP to prevent parameter explosion and sigmoid saturation.
 
     Input
     -----
@@ -166,23 +166,35 @@ class PretrainWindowAnomalyHead(nn.Module):
         C = config.num_input_channels
         P = num_patches_from_config(config)
         D = config.d_model
-        hidden = max(C * P * D // 2, 8)
+        
+        # Project each patch's C*D representation down to a small feature space
+        # to prevent creating a massive 50M parameter linear layer
+        self.patch_proj = nn.Linear(C * D, 16)
+        self.gelu = nn.GELU()
         self.dropout = nn.Dropout(head_dropout)
         
-        # We flatten across all patches and channels to capture full inter-patch and channel relations.
+        # Flattened representation is now P * 16. Map to fraction.
         self.mlp = nn.Sequential(
-            nn.Linear(C * P * D, hidden),
+            nn.Linear(P * 16, 32),
             nn.GELU(),
             nn.Dropout(head_dropout),
-            nn.Linear(hidden, 1),
-            nn.Sigmoid()  # fraction is between 0 and 1
+            nn.Linear(32, 1),
+            nn.Sigmoid()  # fraction is strictly between 0 and 1
         )
 
     def forward(self, hidden_state: torch.Tensor) -> torch.Tensor:
         # hidden_state: (B, C, P, D)
         B, C, P, D = hidden_state.shape
-        x = hidden_state.reshape(B, C * P * D)
+        
+        # Group channels and embeddings: (B, P, C*D)
+        x = hidden_state.permute(0, 2, 1, 3).reshape(B * P, C * D)
+        x = self.patch_proj(x)
+        x = self.gelu(x)
+        
+        # Reshape back to sequence: (B, P * 16)
+        x = x.view(B, P * 16)
         x = self.dropout(x)
+        
         return self.mlp(x).squeeze(-1)  # (B,)
 
 

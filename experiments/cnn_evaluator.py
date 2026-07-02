@@ -91,7 +91,7 @@ def extract_raw_features(
     level: str = "patch",
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Baseline: XGBoost on the raw windowed data (no backbone).
+    Baseline: Raw windowed data chunked into patches for 1D-CNN baseline.
     """
     X_list, y_list = [], []
     device = cfg["device"]
@@ -106,16 +106,19 @@ def extract_raw_features(
         p_labels = p_labels.cpu().numpy()   # (B, P)
         B, L, C  = past.shape
 
+        patches = []
+        for p in range(P):
+            s = p * PS
+            e = s + PL
+            # Flatten raw values inside the patch: PL * C
+            patches.append(past[:, s:e, :].reshape(B, PL * C))
+        
+        # Shape: (B, P, PL * C)
+        X = np.stack(patches, axis=1)
+
         if level == "patch":
-            patches = []
-            for p in range(P):
-                s = p * PS
-                e = s + PL
-                patches.append(past[:, s:e, :].reshape(B, PL * C))
-            X = np.stack(patches, axis=1).reshape(B * P, PL * C)
-            y = p_labels.reshape(B * P)
+            y = p_labels
         else:
-            X = past.reshape(B, L * C)
             y = (p_labels.max(axis=1) > 0.5).astype(np.float32)
 
         X_list.append(X)
@@ -157,8 +160,9 @@ def fit_cnn(X_train: np.ndarray, y_train: np.ndarray, cfg: dict, level: str = "p
     n_neg = y_train.size - n_pos
     pos_weight = n_neg / max(n_pos, 1)
     
-    X_t = torch.tensor(X_train, dtype=torch.float32)
-    y_t = torch.tensor(y_train, dtype=torch.float32)
+    # Zero-copy tensor creation to prevent 10GB+ memory duplication in Colab
+    X_t = torch.as_tensor(X_train, dtype=torch.float32)
+    y_t = torch.as_tensor(y_train, dtype=torch.float32)
     
     dataset = TensorDataset(X_t, y_t)
     loader = DataLoader(dataset, batch_size=256, shuffle=True)
@@ -308,11 +312,14 @@ def main():
 
     X_tr_lat, y_tr = extract_features(model, train_ds, cfg, level=level)
     X_va_lat, y_va = extract_features(model, val_ds,   cfg, level=level)
-    X_te_lat, y_te = extract_features(model, test_ds,  cfg, level=level)
-
-    # Retain full dataset sequence for downstream fitting
+    
+    # Concatenate and immediately delete old arrays to prevent massive OOM memory spikes
     X_tr_all = np.concatenate([X_tr_lat, X_va_lat])
     y_tr_all = np.concatenate([y_tr,    y_va])
+    del X_tr_lat, X_va_lat, y_tr, y_va
+    import gc; gc.collect()
+
+    X_te_lat, y_te = extract_features(model, test_ds,  cfg, level=level)
 
     print(
         f"[downstream] Latent dimensions: train={X_tr_all.shape}  test={X_te_lat.shape}  "
@@ -320,15 +327,20 @@ def main():
     )
 
     # Raw features baseline setup
+    print("\n[downstream] Extracting raw features for baseline comparison...")
     X_tr_raw, y_tr_raw = extract_raw_features(train_ds, cfg, level=level)
     X_va_raw, y_va_raw = extract_raw_features(val_ds,   cfg, level=level)
-    X_te_raw, y_te_raw = extract_raw_features(test_ds,  cfg, level=level)
-
+    
     X_tr_raw_all = np.concatenate([X_tr_raw, X_va_raw])
-    y_tr_raw_all  = np.concatenate([y_tr_raw, y_va_raw])
+    y_tr_raw_all = np.concatenate([y_tr_raw, y_va_raw])
+    del X_tr_raw, X_va_raw, y_tr_raw, y_va_raw
+    gc.collect()
+
+    X_te_raw, y_te_raw = extract_raw_features(test_ds,  cfg, level=level)
 
     print("\n[downstream] Fitting CNN classifiers on GPU...")
     cnn_lat = fit_cnn(X_tr_all,     y_tr_all,     cfg, level=level)
+    cnn_raw = fit_cnn(X_tr_raw_all, y_tr_raw_all, cfg, level=level)
 
     print("\n" + "=" * 60)
     print(f"  TEST RESULTS  ({level}-level classification)")
@@ -336,6 +348,7 @@ def main():
 
     results = {}
     results["CNN on latent"] = evaluate_classifier(cnn_lat, X_te_lat, y_te,     "CNN on latent representation", device=device)
+    results["CNN on raw baseline"] = evaluate_classifier(cnn_raw, X_te_raw, y_te_raw, "CNN on raw data (baseline)", device=device)
 
     print("\n── Summary Metrics ──────────────────────────────────────────")
     for name, metrics in results.items():
