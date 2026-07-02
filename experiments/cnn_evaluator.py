@@ -65,16 +65,20 @@ def extract_features(
             p_labels = p_labels.cpu().numpy()                          # (B, P)
 
             if level == "patch":
-                # (B, P, D) per-patch embeddings, channel-pooled
-                h = model.get_patch_latents(past)                # (B, P, D)
-                X_list.append(h.cpu().numpy())
+                # (B, C, P, D) per-patch embeddings, preserve channels
+                h = model.get_latent_representations(past)  # (B, C, P, D)
+                B, C, P, D = h.shape
+                # Flatten C and D to pass into CNN: (B, P, C * D)
+                h_flat = h.permute(0, 2, 1, 3).reshape(B, P, C * D)
+                X_list.append(h_flat.cpu().numpy())
                 y_list.append(p_labels)
 
             else:  # window-level
-                h = model.get_latent_representations(            # (B, C*D)
-                    past, pool=cfg["latent_pool"]
-                )
-                X_list.append(h.cpu().numpy())
+                h = model.get_latent_representations(past)  # (B, C, P, D)
+                B, C, P, D = h.shape
+                # Flatten C and D to pass into CNN: (B, P, C * D)
+                h_flat = h.permute(0, 2, 1, 3).reshape(B, P, C * D)
+                X_list.append(h_flat.cpu().numpy())
                 # Window is ICME if any patch is ICME
                 y_list.append((p_labels.max(axis=1) > 0.5).astype(np.float32))
 
@@ -124,35 +128,26 @@ class DownstreamCNN(nn.Module):
     def __init__(self, in_channels: int, hidden_channels: int = 128, level: str = "patch"):
         super().__init__()
         self.level = level
-        if level == "patch":
-            # Input: (B, D, P)
-            self.net = nn.Sequential(
-                nn.Conv1d(in_channels, hidden_channels, kernel_size=3, padding=1),
-                nn.ReLU(),
-                nn.Conv1d(hidden_channels, hidden_channels, kernel_size=3, padding=1),
-                nn.ReLU(),
-                nn.Conv1d(hidden_channels, 1, kernel_size=1)
-            )
-        else:
-            # Input: (B, in_channels) where in_channels = C*D
-            self.net = nn.Sequential(
-                nn.Linear(in_channels, hidden_channels),
-                nn.ReLU(),
-                nn.Linear(hidden_channels, hidden_channels),
-                nn.ReLU(),
-                nn.Linear(hidden_channels, 1)
-            )
+        # Input: (B, C*D, P) for BOTH patch and window levels
+        self.net = nn.Sequential(
+            nn.Conv1d(in_channels, hidden_channels, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv1d(hidden_channels, hidden_channels, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv1d(hidden_channels, 1, kernel_size=1)
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x is (B, P, C*D) -> (B, C*D, P)
+        x = x.transpose(1, 2)
+        logits = self.net(x) # (B, 1, P)
+        
         if self.level == "patch":
-            # x is (B, P, D) -> (B, D, P)
-            x = x.transpose(1, 2)
-            logits = self.net(x) # (B, 1, P)
             return logits.squeeze(1) # (B, P)
         else:
-            # x is (B, in_channels)
-            logits = self.net(x) # (B, 1)
-            return logits.squeeze(-1) # (B,)
+            # Window-level: Global max pooling across all patches
+            # (B, 1, P) -> max over P -> (B, 1) -> (B,)
+            return logits.max(dim=2)[0].squeeze(1)
 
 def fit_cnn(X_train: np.ndarray, y_train: np.ndarray, cfg: dict, level: str = "patch"):
     device = cfg.get("device", "cpu")
@@ -294,13 +289,6 @@ def main():
     if args.level is not None:
         cfg["classification_level"] = args.level
 
-    # need to use max pooling or else patches with icme will get averaged out
-    # in the window level classifier
-    cfg["latent_pool"] = "max"
-    
-    # need to use max pooling or else patches with icme will get averaged out
-    # in the window level classifier
-    cfg["latent_pool"] = "max"
 
     omni_full = read_omni_cache(Path(cfg["cache_path"]))
     omni_df   = omni_full.loc[str(cfg["omni_start"]) : str(cfg["omni_end"])].copy()

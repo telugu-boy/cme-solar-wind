@@ -122,19 +122,21 @@ class PretrainAnomalyHead(nn.Module):
 
     def __init__(self, config: PatchTSMixerConfig, head_dropout: float = 0.1):
         super().__init__()
+        C = config.num_input_channels
         D = config.d_model
-        hidden = max(D // 2, 8)
+        hidden = max(C * D // 2, 8)
         self.dropout = nn.Dropout(head_dropout)
         self.mlp = nn.Sequential(
-            nn.Linear(D, hidden),
+            nn.Linear(C * D, hidden),
             nn.GELU(),
             nn.Dropout(head_dropout),
             nn.Linear(hidden, 1),
         )
 
     def forward(self, hidden_state: torch.Tensor) -> torch.Tensor:
-        # (B, C, P, D) — mean over C (dim=1) → (B, P, D)
-        x = hidden_state.mean(dim=1)
+        # (B, C, P, D) — permute and reshape to combine channels and embeddings → (B, P, C*D)
+        B, C, P, D = hidden_state.shape
+        x = hidden_state.permute(0, 2, 1, 3).reshape(B, P, C * D)
         x = self.dropout(x)
         # (B, P, 1) → (B, P)
         return self.mlp(x).squeeze(-1)
@@ -161,17 +163,15 @@ class PretrainWindowAnomalyHead(nn.Module):
 
     def __init__(self, config: PatchTSMixerConfig, head_dropout: float = 0.1):
         super().__init__()
+        C = config.num_input_channels
         P = num_patches_from_config(config)
         D = config.d_model
-        hidden = max(D // 2, 8)
+        hidden = max(C * P * D // 2, 8)
         self.dropout = nn.Dropout(head_dropout)
         
-        # We flatten across patches and channels, or just mean-pool across channels,
-        # then flatten across patches. The original prompt says:
-        # "given the window (the entire tensor c x hf x n) we predict, using this MLP how much of the context is an ICME."
-        # We can mean-pool across channels, then flatten across patches to relate them temporally.
+        # We flatten across all patches and channels to capture full inter-patch and channel relations.
         self.mlp = nn.Sequential(
-            nn.Linear(P * D, hidden),
+            nn.Linear(C * P * D, hidden),
             nn.GELU(),
             nn.Dropout(head_dropout),
             nn.Linear(hidden, 1),
@@ -180,10 +180,8 @@ class PretrainWindowAnomalyHead(nn.Module):
 
     def forward(self, hidden_state: torch.Tensor) -> torch.Tensor:
         # hidden_state: (B, C, P, D)
-        # Mean across channels to force cross-channel consensus, then flatten P and D
         B, C, P, D = hidden_state.shape
-        x = hidden_state.mean(dim=1)  # (B, P, D)
-        x = x.reshape(B, P * D)       # (B, P * D)
+        x = hidden_state.reshape(B, C * P * D)
         x = self.dropout(x)
         return self.mlp(x).squeeze(-1)  # (B,)
 
@@ -378,23 +376,11 @@ class PatchTSMixerICMEBackbone(nn.Module):
         self,
         past_values: torch.Tensor,
         observed_mask: Optional[torch.Tensor] = None,
-        pool: Literal["mean", "max", "flatten"] = "mean",
     ) -> torch.Tensor:
         """
-        Extract a flat feature vector per sample for XGBoost / RF.
-
-        Parameters
-        ----------
-        past_values   : (B, context_length, C)
-        observed_mask : (B, context_length, C) optional
-        pool          : aggregation over patches
-                          "mean"    → (B, C * d_model)
-                          "max"     → (B, C * d_model)
-                          "flatten" → (B, num_patches * C * d_model)
-
-        Returns
-        -------
-        features : (B, feature_dim)
+        Extract the raw order-4 tensor representation from the backbone.
+        Returns:
+            (B, C, P, D)
         """
         self.eval()
         enc = self.backbone(
@@ -402,42 +388,7 @@ class PatchTSMixerICMEBackbone(nn.Module):
             observed_mask=observed_mask,
             return_dict=True,
         )
-        h = enc.last_hidden_state  # (B, C, P, D)
-        B, C, P, D = h.shape
-
-        if pool == "mean":
-            return h.mean(dim=2).reshape(B, C * D)
-        if pool == "max":
-            return h.amax(dim=2).reshape(B, C * D)
-        if pool == "flatten":
-            return h.reshape(B, C * P * D)
-        raise ValueError(f"pool must be 'mean', 'max', or 'flatten', got {pool!r}")
-
-    # ─────────────────────────────────────────────────────────────────────
-    def get_patch_latents(
-        self,
-        past_values: torch.Tensor,
-        observed_mask: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """
-        Return per-patch embeddings, channel-pooled.
-
-        Useful for patch-level XGBoost classification (each patch as a
-        separate sample).
-
-        Returns
-        -------
-        (B, num_patches, d_model)
-        """
-        self.eval()
-        with torch.no_grad():
-            enc = self.backbone(
-                past_values=past_values,
-                observed_mask=observed_mask,
-                return_dict=True,
-            )
-        h = enc.last_hidden_state  # (B, C, P, D)
-        return h.mean(dim=1)       # (B, P, D)
+        return enc.last_hidden_state  # (B, C, P, D)
 
     # ─────────────────────────────────────────────────────────────────────
     def freeze_backbone(self) -> None:

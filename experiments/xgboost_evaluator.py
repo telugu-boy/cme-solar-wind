@@ -67,17 +67,20 @@ def extract_features(
             p_labels = p_labels.cpu().numpy()                          # (B, P)
 
             if level == "patch":
-                # (B, P, D) per-patch embeddings, channel-pooled
-                h = model.get_patch_latents(past)                # (B, P, D)
-                B, P, D = h.shape
-                X_list.append(h.cpu().numpy().reshape(B * P, D))
+                # (B, C, P, D) per-patch embeddings, preserve channels
+                h = model.get_latent_representations(past)  # (B, C, P, D)
+                B, C, P, D = h.shape
+                # Flatten C and D: (B, P, C * D) -> reshape to (B * P, C * D)
+                h_flat = h.permute(0, 2, 1, 3).reshape(B * P, C * D)
+                X_list.append(h_flat.cpu().numpy())
                 y_list.append(p_labels.reshape(B * P))
 
             else:  # window-level
-                h = model.get_latent_representations(            # (B, C*D)
-                    past, pool=cfg["latent_pool"]
-                )
-                X_list.append(h.cpu().numpy())
+                h = model.get_latent_representations(past)  # (B, C, P, D)
+                B, C, P, D = h.shape
+                # Flatten everything across P, C, and D for a single flat feature vector
+                h_flat = h.reshape(B, C * P * D)
+                X_list.append(h_flat.cpu().numpy())
                 # Window is ICME if any patch is ICME
                 y_list.append((p_labels.max(axis=1) > 0.5).astype(np.float32))
 
@@ -256,10 +259,7 @@ def main():
     if args.level is not None:
         cfg["classification_level"] = args.level
 
-    # need to use max pooling or else patches with icme will get averaged out
-    # in the window level classifier
-    cfg["latent_pool"] = "max"
-    
+
     # XGBoost GPU Parameters Configuration
     cfg["xgb_params"] = {
         "n_estimators": 500,
