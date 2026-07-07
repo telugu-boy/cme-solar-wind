@@ -15,8 +15,11 @@ Two custom pretraining heads are attached:
   │  │   always active during pretrain   │                           │
   │  └───────────────────────────────────┘                           │
   │  ┌────┴──────────────────────────────┐                           │
-  │  │ PretrainAnomalyHead (optional)    │   BCE per patch           │
-  │  │   binary ICME / non-ICME label    │   (use_anomaly_head=True) │
+  │  │ PretrainAnomalyHead               │   BCE per patch           │
+  │  │   binary ICME / non-ICME label    │                           │
+  │  └───────────────────────────────────┘                           │
+  │  ┌────┴──────────────────────────────┐                           │
+  │  │ PretrainWindowAnomalyHead         │   MSE fraction in window  │
   │  └───────────────────────────────────┘                           │
   └──────────────────────────────────────────────────────────────────┘
 
@@ -105,8 +108,7 @@ class PretrainAnomalyHead(nn.Module):
     """
     Binary ICME / non-ICME classifier, applied independently per patch.
 
-    Aggregates across channels (mean) then uses a small MLP to produce
-    a scalar logit per patch.
+    Uses a small parameter-efficient MLP to produce a scalar logit per patch.
 
     Input
     -----
@@ -119,22 +121,81 @@ class PretrainAnomalyHead(nn.Module):
 
     def __init__(self, config: PatchTSMixerConfig, head_dropout: float = 0.1):
         super().__init__()
+        C = config.num_input_channels
         D = config.d_model
-        hidden = max(D // 2, 8)
+        # Use a fixed compact hidden layer to avoid parameter explosion
+        hidden = 64
         self.dropout = nn.Dropout(head_dropout)
         self.mlp = nn.Sequential(
-            nn.Linear(D, hidden),
+            nn.Linear(C * D, hidden),
             nn.GELU(),
             nn.Dropout(head_dropout),
             nn.Linear(hidden, 1),
         )
 
     def forward(self, hidden_state: torch.Tensor) -> torch.Tensor:
-        # (B, C, P, D) — mean over C (dim=1) → (B, P, D)
-        x = hidden_state.mean(dim=1)
+        # (B, C, P, D) — permute and reshape to combine channels and embeddings → (B, P, C*D)
+        B, C, P, D = hidden_state.shape
+        x = hidden_state.permute(0, 2, 1, 3).reshape(B, P, C * D)
         x = self.dropout(x)
         # (B, P, 1) → (B, P)
         return self.mlp(x).squeeze(-1)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pretraining window anomaly head (inter-patch)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class PretrainWindowAnomalyHead(nn.Module):
+    """
+    Regression head that predicts the fraction of patches in the window
+    that are ICME patches. Uses a patch-wise projection followed by a small
+    MLP to prevent parameter explosion and sigmoid saturation.
+
+    Input
+    -----
+    hidden_state : (B, C, num_patches, d_model)
+
+    Output
+    ------
+    fraction : (B,)   — predicted fraction of ICME patches (0 to 1)
+    """
+
+    def __init__(self, config: PatchTSMixerConfig, head_dropout: float = 0.1):
+        super().__init__()
+        C = config.num_input_channels
+        P = num_patches_from_config(config)
+        D = config.d_model
+        
+        # Project each patch's C*D representation down to a small feature space
+        # to prevent creating a massive 50M parameter linear layer
+        self.patch_proj = nn.Linear(C * D, 16)
+        self.gelu = nn.GELU()
+        self.dropout = nn.Dropout(head_dropout)
+        
+        # Flattened representation is now P * 16. Map to fraction.
+        self.mlp = nn.Sequential(
+            nn.Linear(P * 16, 32),
+            nn.GELU(),
+            nn.Dropout(head_dropout),
+            nn.Linear(32, 1),
+            nn.Sigmoid()  # fraction is strictly between 0 and 1
+        )
+
+    def forward(self, hidden_state: torch.Tensor) -> torch.Tensor:
+        # hidden_state: (B, C, P, D)
+        B, C, P, D = hidden_state.shape
+        
+        # Group channels and embeddings: (B, P, C*D)
+        x = hidden_state.permute(0, 2, 1, 3).reshape(B * P, C * D)
+        x = self.patch_proj(x)
+        x = self.gelu(x)
+        
+        # Reshape back to sequence: (B, P * 16)
+        x = x.view(B, P * 16)
+        x = self.dropout(x)
+        
+        return self.mlp(x).squeeze(-1)  # (B,)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -156,12 +217,18 @@ class ICMEBackboneOutput:
 
     anomaly_loss: Optional[torch.Tensor] = None
     """BCE (with logits) across all patches."""
+    
+    window_anomaly_loss: Optional[torch.Tensor] = None
+    """MSE of predicted ICME fraction in the window."""
 
     forecast_pred: Optional[torch.Tensor] = None
     """(B, prediction_length, C) — forecast head output."""
 
     anomaly_logits: Optional[torch.Tensor] = None
     """(B, num_patches) — anomaly head raw logits."""
+    
+    window_anomaly_pred: Optional[torch.Tensor] = None
+    """(B,) — predicted fraction of ICME patches in window."""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -188,14 +255,14 @@ class PatchTSMixerICMEBackbone(nn.Module):
     config : PatchTSMixerConfig
         Must set: context_length, patch_length, patch_stride,
         num_input_channels, d_model, prediction_length.
-    use_anomaly_head : bool
-        Attach the patch-level binary ICME head.
     head_dropout : float
-        Dropout applied inside both heads.
+        Dropout applied inside heads.
     forecast_loss_weight : float
         Scalar multiplier for the MSE forecast loss term.
     anomaly_loss_weight : float
         Scalar multiplier for the BCE anomaly loss term.
+    window_anomaly_loss_weight : float
+        Scalar multiplier for the window-level anomaly fraction MSE loss term.
     pos_weight : float | None
         Passed to BCEWithLogitsLoss to compensate for ICME class imbalance.
         Typical value: (number of non-ICME patches) / (number of ICME patches).
@@ -205,31 +272,30 @@ class PatchTSMixerICMEBackbone(nn.Module):
         self,
         config: PatchTSMixerConfig,
         *,
-        use_anomaly_head: bool = True,
         head_dropout: float = 0.1,
         forecast_loss_weight: float = 1.0,
         anomaly_loss_weight: float = 1.0,
+        window_anomaly_loss_weight: float = 0.0,
         pos_weight: Optional[float] = None,
     ) -> None:
         super().__init__()
         self.config = config
-        self.use_anomaly_head = use_anomaly_head
         self.forecast_loss_weight = forecast_loss_weight
         self.anomaly_loss_weight = anomaly_loss_weight
+        self.window_anomaly_loss_weight = window_anomaly_loss_weight
         self.num_patches = num_patches_from_config(config)
 
         # ── Core backbone: pure MLP-Mixer encoder, no HF prediction head ──
         self.backbone = PatchTSMixerModel(config)
 
-        # ── Pretrain forecast head (always active) ──────────────────────
+        # ── Pretrain forecast head ──────────────────────────────────────
         self.forecast_head = PretrainForecastHead(config, head_dropout)
 
-        # ── Optional pretrain anomaly head ──────────────────────────────
-        self.anomaly_head: Optional[PretrainAnomalyHead]
-        if use_anomaly_head:
-            self.anomaly_head = PretrainAnomalyHead(config, head_dropout)
-        else:
-            self.anomaly_head = None
+        # ── Pretrain anomaly head ───────────────────────────────────────
+        self.anomaly_head = PretrainAnomalyHead(config, head_dropout)
+        
+        # ── Pretrain window anomaly head ────────────────────────────────
+        self.window_anomaly_head = PretrainWindowAnomalyHead(config, head_dropout)
 
         # pos_weight for BCEWithLogitsLoss (class imbalance)
         if pos_weight is not None:
@@ -270,37 +336,50 @@ class PatchTSMixerICMEBackbone(nn.Module):
         # ── Forecast head ────────────────────────────────────────────────
         forecast_loss: Optional[torch.Tensor] = None
         forecast_pred: Optional[torch.Tensor] = None
-        if future_values is not None:
+        if future_values is not None and self.forecast_loss_weight > 0.0:
             forecast_pred = self.forecast_head(hidden)           # (B, T, C)
             forecast_loss = F.mse_loss(forecast_pred, future_values.float())
 
         # ── Anomaly head ─────────────────────────────────────────────────
         anomaly_loss: Optional[torch.Tensor] = None
         anomaly_logits: Optional[torch.Tensor] = None
-        if self.anomaly_head is not None and patch_labels is not None:
+        if patch_labels is not None and self.anomaly_loss_weight > 0.0:
             anomaly_logits = self.anomaly_head(hidden)           # (B, P)
             anomaly_loss = F.binary_cross_entropy_with_logits(
                 anomaly_logits,
                 patch_labels.float(),
                 pos_weight=self._pos_weight,
             )
+            
+        # ── Window Anomaly head ──────────────────────────────────────────
+        window_anomaly_loss: Optional[torch.Tensor] = None
+        window_anomaly_pred: Optional[torch.Tensor] = None
+        if patch_labels is not None and self.window_anomaly_loss_weight > 0.0:
+            window_anomaly_pred = self.window_anomaly_head(hidden) # (B,)
+            # Target is fraction of ICME patches
+            window_targets = patch_labels.float().mean(dim=-1) # (B,)
+            window_anomaly_loss = F.mse_loss(window_anomaly_pred, window_targets)
 
         # ── Combined pretraining loss ────────────────────────────────────
         total_loss: Optional[torch.Tensor] = None
-        if forecast_loss is not None or anomaly_loss is not None:
+        if forecast_loss is not None or anomaly_loss is not None or window_anomaly_loss is not None:
             total_loss = past_values.new_zeros(())  # scalar zero, same device/dtype
             if forecast_loss is not None:
                 total_loss = total_loss + self.forecast_loss_weight * forecast_loss
             if anomaly_loss is not None:
                 total_loss = total_loss + self.anomaly_loss_weight * anomaly_loss
+            if window_anomaly_loss is not None:
+                total_loss = total_loss + self.window_anomaly_loss_weight * window_anomaly_loss
 
         return ICMEBackboneOutput(
             last_hidden_state=hidden,
             total_loss=total_loss,
             forecast_loss=forecast_loss,
             anomaly_loss=anomaly_loss,
+            window_anomaly_loss=window_anomaly_loss,
             forecast_pred=forecast_pred,
             anomaly_logits=anomaly_logits,
+            window_anomaly_pred=window_anomaly_pred,
         )
 
     # ─────────────────────────────────────────────────────────────────────
@@ -309,23 +388,11 @@ class PatchTSMixerICMEBackbone(nn.Module):
         self,
         past_values: torch.Tensor,
         observed_mask: Optional[torch.Tensor] = None,
-        pool: Literal["mean", "max", "flatten"] = "mean",
     ) -> torch.Tensor:
         """
-        Extract a flat feature vector per sample for XGBoost / RF.
-
-        Parameters
-        ----------
-        past_values   : (B, context_length, C)
-        observed_mask : (B, context_length, C) optional
-        pool          : aggregation over patches
-                          "mean"    → (B, C * d_model)
-                          "max"     → (B, C * d_model)
-                          "flatten" → (B, num_patches * C * d_model)
-
-        Returns
-        -------
-        features : (B, feature_dim)
+        Extract the raw order-4 tensor representation from the backbone.
+        Returns:
+            (B, C, P, D)
         """
         self.eval()
         enc = self.backbone(
@@ -333,42 +400,7 @@ class PatchTSMixerICMEBackbone(nn.Module):
             observed_mask=observed_mask,
             return_dict=True,
         )
-        h = enc.last_hidden_state  # (B, C, P, D)
-        B, C, P, D = h.shape
-
-        if pool == "mean":
-            return h.mean(dim=2).reshape(B, C * D)
-        if pool == "max":
-            return h.amax(dim=2).reshape(B, C * D)
-        if pool == "flatten":
-            return h.reshape(B, C * P * D)
-        raise ValueError(f"pool must be 'mean', 'max', or 'flatten', got {pool!r}")
-
-    # ─────────────────────────────────────────────────────────────────────
-    def get_patch_latents(
-        self,
-        past_values: torch.Tensor,
-        observed_mask: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """
-        Return per-patch embeddings, channel-pooled.
-
-        Useful for patch-level XGBoost classification (each patch as a
-        separate sample).
-
-        Returns
-        -------
-        (B, num_patches, d_model)
-        """
-        self.eval()
-        with torch.no_grad():
-            enc = self.backbone(
-                past_values=past_values,
-                observed_mask=observed_mask,
-                return_dict=True,
-            )
-        h = enc.last_hidden_state  # (B, C, P, D)
-        return h.mean(dim=1)       # (B, P, D)
+        return enc.last_hidden_state  # (B, C, P, D)
 
     # ─────────────────────────────────────────────────────────────────────
     def freeze_backbone(self) -> None:
@@ -398,7 +430,9 @@ class PatchTSMixerICMEBackbone(nn.Module):
             f"  d_model            : {D}\n"
             f"  num_layers         : {self.config.num_layers}\n"
             f"  prediction_length  : {T}\n"
-            f"  use_anomaly_head   : {self.use_anomaly_head}\n"
+            f"  forecast_wt        : {self.forecast_loss_weight}\n"
+            f"  anomaly_wt         : {self.anomaly_loss_weight}\n"
+            f"  window_anomaly_wt  : {self.window_anomaly_loss_weight}\n"
             f"  latent_dim (mean)  : {C * D}\n"
             f"  total_params       : "
             f"{sum(p.numel() for p in self.parameters()):,}"

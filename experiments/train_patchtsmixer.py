@@ -73,8 +73,13 @@ CFG: dict[str, Any] = {
     # ── Model architecture ────────────────────────────────────────────────
     # Context window: 32h at 5-min resolution = 32 * 12 = 384 timesteps
     # Ablation options from spreadsheet: 32h, 36h, 48h
+<<<<<<< HEAD
     "context_length":   384//2,        # 384//2 = 16h (experiments have shown that we must concentrate the window, try 384//3 = 12 too)
     "prediction_length": 96,           # 8h ahead
+=======
+    "context_length":   384//2,        # 16h (experiments have shown that we must concentrate the window, try 384//3 = 12 too)
+    "prediction_length": 96//2,           # 4h ahead
+>>>>>>> 3f831a3dcd34d9d78aa54ee49296b4adce065d51
     "patch_length":      16,           # 80 min per patch → 12 patches per 16h window
     "patch_stride":      16,           # non-overlapping patches
     "d_model":           64,
@@ -84,6 +89,7 @@ CFG: dict[str, Any] = {
     "head_dropout":      0.2,
     "mode":              "mix_channel",  # "common_channel" or "mix_channel"
     "gated_attn":        True,
+<<<<<<< HEAD
     "self_attn":         True,          # tiny self-attn across patches (optional)
 
     # ── Pretraining heads ──────────────────────────────────────────────────
@@ -91,6 +97,15 @@ CFG: dict[str, Any] = {
     "forecast_loss_weight":   1.0,
     "anomaly_loss_weight":    2.0,    # upweight anomaly to match experiment focus
     # inter-patch anoamly head may have a 1:3 weighting with above,
+=======
+    "self_attn":         True,           # tiny self-attn across patches (optional)
+
+    # ── Pretraining heads ──────────────────────────────────────────────────
+    "forecast_loss_weight":   1.5,
+    "anomaly_loss_weight":    3.0,    # upweight anomaly to match experiment focus
+    "window_anomaly_loss_weight": 2.0, # inter-patch anomaly head 1:3 weighting
+    # inter-patch anomaly head may have a 1:3 weighting with above,
+>>>>>>> 3f831a3dcd34d9d78aa54ee49296b4adce065d51
     # so if anomaly_loss_weight is 3.0 this may be 1.0 or 1.5.
 
     # ── Patch labelling ────────────────────────────────────────────────────
@@ -134,10 +149,10 @@ def build_backbone(cfg: dict, pos_weight: Optional[float] = None) -> PatchTSMixe
     )
     model = PatchTSMixerICMEBackbone(
         config,
-        use_anomaly_head=cfg["use_anomaly_head"],
         head_dropout=cfg["head_dropout"],
         forecast_loss_weight=cfg["forecast_loss_weight"],
         anomaly_loss_weight=cfg["anomaly_loss_weight"],
+        window_anomaly_loss_weight=cfg.get("window_anomaly_loss_weight", 0.0),
         pos_weight=pos_weight,
     )
     model.summary()
@@ -153,7 +168,7 @@ def run_one_epoch(
     grad_scaler = None,
 ) -> dict[str, float]:
     model.train(train)
-    totals: dict[str, float] = {"total": 0.0, "forecast": 0.0, "anomaly": 0.0}
+    totals: dict[str, float] = {"total": 0.0, "forecast": 0.0, "anomaly": 0.0, "window_anomaly": 0.0}
     n = 0
 
     ctx = torch.enable_grad() if train else torch.no_grad()
@@ -162,7 +177,7 @@ def run_one_epoch(
             if train:
                 optimizer.zero_grad()
 
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast('cuda'):
                 out = model(past, future_values=future, patch_labels=p_labels)
 
             if train:
@@ -178,6 +193,8 @@ def run_one_epoch(
                 totals["forecast"] += out.forecast_loss.item() * bs
             if out.anomaly_loss is not None:
                 totals["anomaly"] += out.anomaly_loss.item() * bs
+            if hasattr(out, "window_anomaly_loss") and out.window_anomaly_loss is not None:
+                totals["window_anomaly"] += out.window_anomaly_loss.item() * bs
 
             n += bs
 
@@ -192,7 +209,8 @@ def pretrain(
 ) -> str:
     ckpt_dir = Path(cfg["checkpoint_dir"])
     ckpt_dir.mkdir(parents=True, exist_ok=True)
-    best_ckpt = str(ckpt_dir / "patchtsmixer_icme_best.pt")
+    ckpt_name = cfg.get("checkpoint_name", "patchtsmixer_icme_best.pt")
+    best_ckpt = str(ckpt_dir / ckpt_name)
 
     device = cfg["device"]
     model  = model.to(device)
@@ -233,8 +251,10 @@ def pretrain(
             last_lr = current_lr
 
         loss_parts = (
-            f"total={tr['total']:.4f}  forecast={tr['forecast']:.4f}  "
-            f"anomaly={tr['anomaly']:.4f}"
+            f"total={tr['total']:.4f}  "
+            f"forecast(x{model.forecast_loss_weight:.1f})={tr['forecast']:.4f}  "
+            f"anomaly(x{model.anomaly_loss_weight:.1f})={tr['anomaly']:.4f}  "
+            f"win_anomaly(x{model.window_anomaly_loss_weight:.1f})={tr['window_anomaly']:.4f}"
         )
         print(
             f"[pretrain] epoch {epoch:03d}/{cfg['pretrain_epochs']}  "
@@ -291,8 +311,9 @@ def main(cfg: dict = CFG) -> None:
         "feature_cols": feature_cols,
         "scaler": scaler,
     }
-    torch.save(save_package, results_dir / "patchtsmixer_backbone_final.pt")
-    print(f"[results] Backbone saved to {results_dir / 'patchtsmixer_backbone_final.pt'}")
+    final_name = cfg.get("checkpoint_name", "patchtsmixer_backbone_final.pt").replace("_best", "_final")
+    torch.save(save_package, results_dir / final_name)
+    print(f"[results] Backbone saved to {results_dir / final_name}")
 
 
 if __name__ == "__main__":
@@ -305,9 +326,12 @@ if __name__ == "__main__":
     parser.add_argument("--lr",              type=float, default=CFG["learning_rate"])
     parser.add_argument("--d_model",         type=int,   default=CFG["d_model"])
     parser.add_argument("--num_layers",      type=int,   default=CFG["num_layers"])
-    parser.add_argument("--anomaly_head",    action="store_true", help="Enable anomaly head")
+    parser.add_argument("--forecast_loss_weight", type=float, default=CFG["forecast_loss_weight"])
+    parser.add_argument("--anomaly_loss_weight", type=float, default=CFG["anomaly_loss_weight"])
+    parser.add_argument("--window_anomaly_loss_weight", type=float, default=CFG["window_anomaly_loss_weight"])
     parser.add_argument("--univariate",      action="store_true")
     parser.add_argument("--level",           type=str,   default=CFG["classification_level"], choices=["patch", "window"])
+    parser.add_argument("--checkpoint_name", type=str,   default="patchtsmixer_backbone_final.pt")
     args = parser.parse_args()
 
     CFG["context_length"]   = args.context_length
@@ -318,8 +342,11 @@ if __name__ == "__main__":
     CFG["learning_rate"]    = args.lr
     CFG["d_model"]          = args.d_model
     CFG["num_layers"]       = args.num_layers
-    CFG["use_anomaly_head"] = args.anomaly_head
+    CFG["forecast_loss_weight"] = args.forecast_loss_weight
+    CFG["anomaly_loss_weight"]  = args.anomaly_loss_weight
+    CFG["window_anomaly_loss_weight"] = args.window_anomaly_loss_weight
     CFG["univariate_test"]  = args.univariate
     CFG["classification_level"] = args.level
+    CFG["checkpoint_name"]  = args.checkpoint_name
 
     main(CFG)

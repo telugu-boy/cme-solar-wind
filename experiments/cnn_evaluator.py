@@ -1,10 +1,10 @@
 """
-xgboost_evaluator.py
+cnn_evaluator.py
 ---------------------
-Downstream classifier evaluation script. 
+Downstream classifier evaluation script using a 1D-CNN. 
 
 Extracts features from pre-trained backbone embeddings and fits
-XGBoost. Also runs a raw data baseline to assess representation quality.
+a 1D-CNN to capture sequential patch-level dependencies (p-1, p, p+1).
 """
 
 from __future__ import annotations
@@ -25,12 +25,10 @@ from sklearn.metrics import (
 )
 from transformers import PatchTSMixerConfig
 
-try:
-    from xgboost import XGBClassifier
-    HAS_XGBOOST = True
-except ImportError:
-    HAS_XGBOOST = False
-    raise ImportError("xgboost is required to run this script.")
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from torch.utils.data import TensorDataset, DataLoader
 
 from .loaders import (
     read_omni_cache,
@@ -70,16 +68,16 @@ def extract_features(
                 # (B, C, P, D) per-patch embeddings, preserve channels
                 h = model.get_latent_representations(past)  # (B, C, P, D)
                 B, C, P, D = h.shape
-                # Flatten C and D: (B, P, C * D) -> reshape to (B * P, C * D)
-                h_flat = h.permute(0, 2, 1, 3).reshape(B * P, C * D)
+                # Flatten C and D to pass into CNN: (B, P, C * D)
+                h_flat = h.permute(0, 2, 1, 3).reshape(B, P, C * D)
                 X_list.append(h_flat.cpu().numpy())
-                y_list.append(p_labels.reshape(B * P))
+                y_list.append(p_labels)
 
             else:  # window-level
                 h = model.get_latent_representations(past)  # (B, C, P, D)
                 B, C, P, D = h.shape
-                # Flatten everything across P, C, and D for a single flat feature vector
-                h_flat = h.reshape(B, C * P * D)
+                # Flatten C and D to pass into CNN: (B, P, C * D)
+                h_flat = h.permute(0, 2, 1, 3).reshape(B, P, C * D)
                 X_list.append(h_flat.cpu().numpy())
                 # Window is ICME if any patch is ICME
                 y_list.append((p_labels.max(axis=1) > 0.5).astype(np.float32))
@@ -93,7 +91,7 @@ def extract_raw_features(
     level: str = "patch",
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Baseline: XGBoost on the raw windowed data (no backbone).
+    Baseline: Raw windowed data chunked into patches for 1D-CNN baseline.
     """
     X_list, y_list = [], []
     device = cfg["device"]
@@ -108,16 +106,19 @@ def extract_raw_features(
         p_labels = p_labels.cpu().numpy()   # (B, P)
         B, L, C  = past.shape
 
+        patches = []
+        for p in range(P):
+            s = p * PS
+            e = s + PL
+            # Flatten raw values inside the patch: PL * C
+            patches.append(past[:, s:e, :].reshape(B, PL * C))
+        
+        # Shape: (B, P, PL * C)
+        X = np.stack(patches, axis=1)
+
         if level == "patch":
-            patches = []
-            for p in range(P):
-                s = p * PS
-                e = s + PL
-                patches.append(past[:, s:e, :].reshape(B, PL * C))
-            X = np.stack(patches, axis=1).reshape(B * P, PL * C)
-            y = p_labels.reshape(B * P)
+            y = p_labels
         else:
-            X = past.reshape(B, L * C)
             y = (p_labels.max(axis=1) > 0.5).astype(np.float32)
 
         X_list.append(X)
@@ -126,32 +127,65 @@ def extract_raw_features(
     return np.concatenate(X_list), np.concatenate(y_list)
 
 
-def fit_xgb(X_train: np.ndarray, y_train: np.ndarray, cfg: dict):
-    # Compute scale_pos_weight for XGBoost imbalance handling
-    n_pos = int(y_train.sum())
-    n_neg = len(y_train) - n_pos
-    scale_pos_weight = n_neg / max(n_pos, 1)
-    
-    params = dict(cfg["xgb_params"])
-    params["scale_pos_weight"] = scale_pos_weight
-    
-    xgb = XGBClassifier(**params)
-    
+class DownstreamCNN(nn.Module):
+    def __init__(self, in_channels: int, hidden_channels: int = 128, level: str = "patch"):
+        super().__init__()
+        self.level = level
+        # Input: (B, C*D, P) for BOTH patch and window levels
+        self.net = nn.Sequential(
+            nn.Conv1d(in_channels, hidden_channels, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv1d(hidden_channels, hidden_channels, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv1d(hidden_channels, 1, kernel_size=1)
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x is (B, P, C*D) -> (B, C*D, P)
+        x = x.transpose(1, 2)
+        logits = self.net(x) # (B, 1, P)
+        
+        if self.level == "patch":
+            return logits.squeeze(1) # (B, P)
+        else:
+            # Window-level: Global max pooling across all patches
+            # (B, 1, P) -> max over P -> (B, 1) -> (B,)
+            return logits.max(dim=2)[0].squeeze(1)
+
+def fit_cnn(X_train: np.ndarray, y_train: np.ndarray, cfg: dict, level: str = "patch"):
     device = cfg.get("device", "cpu")
-    if "cuda" in str(params.get("device", "")) or "cuda" in str(device):
-        # Pure PyTorch CUDA tensor casting — zero-copy interface with XGBoost GPU
-        X_train_dev = torch.as_tensor(X_train, device=device, dtype=torch.float32)
-        y_train_dev = torch.as_tensor(y_train.astype(int), device=device)
-    else:
-        X_train_dev = X_train
-        y_train_dev = y_train.astype(int)
     
-    xgb.fit(
-        X_train_dev, y_train_dev,
-        eval_set=[(X_train_dev, y_train_dev)],
-        verbose=False,
-    )
-    return xgb
+    # Compute scale_pos_weight
+    n_pos = int(y_train.sum())
+    n_neg = y_train.size - n_pos
+    pos_weight = n_neg / max(n_pos, 1)
+    
+    # Zero-copy tensor creation to prevent 10GB+ memory duplication in Colab
+    X_t = torch.as_tensor(X_train, dtype=torch.float32)
+    y_t = torch.as_tensor(y_train, dtype=torch.float32)
+    
+    dataset = TensorDataset(X_t, y_t)
+    loader = DataLoader(dataset, batch_size=256, shuffle=True)
+    
+    in_channels = X_train.shape[-1]
+    model = DownstreamCNN(in_channels, hidden_channels=128, level=level).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+    criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(pos_weight, device=device))
+    
+    model.train()
+    epochs = 20
+    for epoch in range(epochs):
+        total_loss = 0.0
+        for bx, by in loader:
+            bx, by = bx.to(device), by.to(device)
+            optimizer.zero_grad()
+            logits = model(bx)
+            loss = criterion(logits, by)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item() * bx.size(0)
+    
+    return model
 
 
 def evaluate_classifier(
@@ -164,20 +198,20 @@ def evaluate_classifier(
     if clf is None:
         return {}
     
-    if "cuda" in str(clf.get_params().get("device", "")) or "cuda" in str(device):
-        X_test_dev = torch.as_tensor(X_test, device=device, dtype=torch.float32)
+    if "cuda" in str(device):
+        X_test_dev = torch.tensor(X_test, device=device, dtype=torch.float32)
     else:
-        X_test_dev = X_test
+        X_test_dev = torch.tensor(X_test, dtype=torch.float32)
 
-    # Generate both hard labels and continuous probabilities
-    y_pred = clf.predict(X_test_dev)
-    y_prob = clf.predict_proba(X_test_dev)[:, 1]
+    clf.eval()
+    with torch.no_grad():
+        logits = clf(X_test_dev)
+        y_prob = torch.sigmoid(logits)
+        y_pred = (y_prob > 0.5).int()
     
-    # Unpack PyTorch CUDA tensors back to standard CPU NumPy arrays for Sklearn compliance
-    if hasattr(y_pred, "cpu"): 
-        y_pred = y_pred.cpu().numpy()
-    if hasattr(y_prob, "cpu"): 
-        y_prob = y_prob.cpu().numpy()
+    y_pred = y_pred.cpu().numpy().flatten()
+    y_prob = y_prob.cpu().numpy().flatten()
+    y_test_int = y_test.astype(int).flatten()
 
     # Calculate metrics
     y_test_int = y_test.astype(int)
@@ -260,19 +294,6 @@ def main():
         cfg["classification_level"] = args.level
 
 
-    # XGBoost GPU Parameters Configuration
-    cfg["xgb_params"] = {
-        "n_estimators": 500,
-        "max_depth": 6,
-        "learning_rate": 0.05,
-        "subsample": 0.8,
-        "colsample_bytree": 0.8,
-        "use_label_encoder": False,
-        "eval_metric": ["logloss", "auc", "aucpr"], 
-        "device": "cuda",             
-        "random_state": 42,
-    }
-
     omni_full = read_omni_cache(Path(cfg["cache_path"]))
     omni_df   = omni_full.loc[str(cfg["omni_start"]) : str(cfg["omni_end"])].copy()
     cr_icmes  = get_cr_icme_dataframe(cfg["omni_start"], cfg["omni_end"], cfg["icme_catalog_path"])
@@ -292,7 +313,7 @@ def main():
     X_tr_lat, y_tr = extract_features(model, train_ds, cfg, level=level)
     X_va_lat, y_va = extract_features(model, val_ds,   cfg, level=level)
     
-    # Concatenate and immediately delete to prevent massive OOM memory spikes
+    # Concatenate and immediately delete old arrays to prevent massive OOM memory spikes
     X_tr_all = np.concatenate([X_tr_lat, X_va_lat])
     y_tr_all = np.concatenate([y_tr,    y_va])
     del X_tr_lat, X_va_lat, y_tr, y_va
@@ -306,27 +327,28 @@ def main():
     )
 
     # Raw features baseline setup
+    print("\n[downstream] Extracting raw features for baseline comparison...")
     X_tr_raw, y_tr_raw = extract_raw_features(train_ds, cfg, level=level)
     X_va_raw, y_va_raw = extract_raw_features(val_ds,   cfg, level=level)
     
     X_tr_raw_all = np.concatenate([X_tr_raw, X_va_raw])
-    y_tr_raw_all  = np.concatenate([y_tr_raw, y_va_raw])
+    y_tr_raw_all = np.concatenate([y_tr_raw, y_va_raw])
     del X_tr_raw, X_va_raw, y_tr_raw, y_va_raw
     gc.collect()
 
     X_te_raw, y_te_raw = extract_raw_features(test_ds,  cfg, level=level)
 
-    print("\n[downstream] Fitting XGBoost classifiers on GPU...")
-    xgb_lat = fit_xgb(X_tr_all,     y_tr_all,     cfg)
-    xgb_raw = fit_xgb(X_tr_raw_all, y_tr_raw_all, cfg)
+    print("\n[downstream] Fitting CNN classifiers on GPU...")
+    cnn_lat = fit_cnn(X_tr_all,     y_tr_all,     cfg, level=level)
+    cnn_raw = fit_cnn(X_tr_raw_all, y_tr_raw_all, cfg, level=level)
 
     print("\n" + "=" * 60)
     print(f"  TEST RESULTS  ({level}-level classification)")
     print("=" * 60)
 
     results = {}
-    results["XGB on latent"] = evaluate_classifier(xgb_lat, X_te_lat, y_te,     "XGB on latent representation", device=device)
-    results["XGB on raw"]    = evaluate_classifier(xgb_raw, X_te_raw, y_te_raw, "XGB on raw data (baseline)", device=device)
+    results["CNN on latent"] = evaluate_classifier(cnn_lat, X_te_lat, y_te,     "CNN on latent representation", device=device)
+    results["CNN on raw baseline"] = evaluate_classifier(cnn_raw, X_te_raw, y_te_raw, "CNN on raw data (baseline)", device=device)
 
     print("\n── Summary Metrics ──────────────────────────────────────────")
     for name, metrics in results.items():
