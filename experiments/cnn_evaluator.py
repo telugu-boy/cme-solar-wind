@@ -128,37 +128,66 @@ def extract_raw_features(
 
 
 class DownstreamCNN(nn.Module):
-    def __init__(self, in_channels: int, hidden_channels: int = 128, level: str = "patch"):
+    def __init__(self, in_features: int, hidden_channels: int = 128, level: str = "patch", 
+                 is_latent: bool = False, C: int = 10, D: int = 64, proj_channels: int = 4):
         super().__init__()
         self.level = level
-        # Input: (B, C*D, P) for BOTH patch and window levels
+        self.is_latent = is_latent
+        self.C = C
+        self.D = D
+
+        if self.is_latent:
+            self.channel_proj = nn.Conv2d(self.C, proj_channels, kernel_size=1)
+            cnn_in = proj_channels * self.D
+        else:
+            cnn_in = in_features
+
+        # Expanded temporal receptive field (kernel_size=5) & heavy regularization
         self.net = nn.Sequential(
-            nn.Conv1d(in_channels, hidden_channels, kernel_size=3, padding=1),
+            nn.Conv1d(cnn_in, hidden_channels, kernel_size=5, padding=2),
+            nn.BatchNorm1d(hidden_channels),
             nn.ReLU(),
-            nn.Conv1d(hidden_channels, hidden_channels, kernel_size=3, padding=1),
+            nn.Dropout(0.3),
+            nn.Conv1d(hidden_channels, hidden_channels, kernel_size=5, padding=2),
+            nn.BatchNorm1d(hidden_channels),
             nn.ReLU(),
+            nn.Dropout(0.3),
             nn.Conv1d(hidden_channels, 1, kernel_size=1)
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x is (B, P, C*D) -> (B, C*D, P)
-        x = x.transpose(1, 2)
+        if self.is_latent:
+            # x is (B, P, C*D)
+            B, P, CD = x.shape
+            x = x.view(B, P, self.C, self.D)
+            # Permute to (B, C, P, D) for Conv2d
+            x = x.permute(0, 2, 1, 3)
+            # Mix channels
+            x = self.channel_proj(x) # (B, proj_channels, P, D)
+            # Flatten mixed channels and embeddings for 1D CNN over P
+            x = x.permute(0, 1, 3, 2).reshape(B, -1, P) # (B, proj_channels * D, P)
+        else:
+            # x is (B, P, in_features) -> (B, in_features, P)
+            x = x.transpose(1, 2)
+            
         logits = self.net(x) # (B, 1, P)
         
         if self.level == "patch":
             return logits.squeeze(1) # (B, P)
         else:
             # Window-level: Global max pooling across all patches
-            # (B, 1, P) -> max over P -> (B, 1) -> (B,)
             return logits.max(dim=2)[0].squeeze(1)
 
-def fit_cnn(X_train: np.ndarray, y_train: np.ndarray, cfg: dict, level: str = "patch"):
+def fit_cnn(X_train: np.ndarray, y_train: np.ndarray, cfg: dict, level: str = "patch", is_latent: bool = False):
     device = cfg.get("device", "cpu")
     
     # Compute scale_pos_weight
     n_pos = int(y_train.sum())
     n_neg = y_train.size - n_pos
     pos_weight = n_neg / max(n_pos, 1)
+    
+    # Dampen the massive BCE pos_weight using a square root scale
+    pos_weight = np.sqrt(pos_weight)
     
     # Zero-copy tensor creation to prevent 10GB+ memory duplication in Colab
     X_t = torch.as_tensor(X_train, dtype=torch.float32)
@@ -167,8 +196,16 @@ def fit_cnn(X_train: np.ndarray, y_train: np.ndarray, cfg: dict, level: str = "p
     dataset = TensorDataset(X_t, y_t)
     loader = DataLoader(dataset, batch_size=256, shuffle=True)
     
-    in_channels = X_train.shape[-1]
-    model = DownstreamCNN(in_channels, hidden_channels=128, level=level).to(device)
+    in_features = X_train.shape[-1]
+    model = DownstreamCNN(
+        in_features, 
+        hidden_channels=128, 
+        level=level, 
+        is_latent=is_latent,
+        C=cfg.get("_n_features", 10),
+        D=cfg.get("d_model", 64),
+        proj_channels=cfg.get("proj_channels", 4)
+    ).to(device)
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
     criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(pos_weight, device=device))
     
@@ -213,8 +250,6 @@ def evaluate_classifier(
     y_prob = y_prob.cpu().numpy().flatten()
     y_test_int = y_test.astype(int).flatten()
 
-    # Calculate metrics
-    y_test_int = y_test.astype(int)
     prec, rec, f1, _ = precision_recall_fscore_support(
         y_test_int, y_pred, average="binary", zero_division=0
     )
@@ -260,7 +295,6 @@ def build_backbone_from_config(cfg: dict, checkpoint_state: dict) -> PatchTSMixe
         head_dropout=cfg.get("head_dropout", 0.1),
         forecast_loss_weight=cfg.get("forecast_loss_weight", 0.0),
         anomaly_loss_weight=cfg.get("anomaly_loss_weight", 1.0),
-        window_anomaly_loss_weight=cfg.get("window_anomaly_loss_weight", 0.0),
     )
     
     state_dict = {k.replace("_orig_mod.", ""): v for k, v in checkpoint_state.items()}
@@ -339,8 +373,8 @@ def main():
     X_te_raw, y_te_raw = extract_raw_features(test_ds,  cfg, level=level)
 
     print("\n[downstream] Fitting CNN classifiers on GPU...")
-    cnn_lat = fit_cnn(X_tr_all,     y_tr_all,     cfg, level=level)
-    cnn_raw = fit_cnn(X_tr_raw_all, y_tr_raw_all, cfg, level=level)
+    cnn_lat = fit_cnn(X_tr_all,     y_tr_all,     cfg, level=level, is_latent=True)
+    cnn_raw = fit_cnn(X_tr_raw_all, y_tr_raw_all, cfg, level=level, is_latent=False)
 
     print("\n" + "=" * 60)
     print(f"  TEST RESULTS  ({level}-level classification)")

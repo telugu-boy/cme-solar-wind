@@ -226,7 +226,6 @@ def build_backbone_from_config(cfg: dict, checkpoint_state: dict) -> PatchTSMixe
         head_dropout=cfg.get("head_dropout", 0.1),
         forecast_loss_weight=cfg.get("forecast_loss_weight", 0.0),
         anomaly_loss_weight=cfg.get("anomaly_loss_weight", 1.0),
-        window_anomaly_loss_weight=cfg.get("window_anomaly_loss_weight", 0.0),
     )
     
     state_dict = {k.replace("_orig_mod.", ""): v for k, v in checkpoint_state.items()}

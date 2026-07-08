@@ -73,13 +73,8 @@ CFG: dict[str, Any] = {
     # ── Model architecture ────────────────────────────────────────────────
     # Context window: 32h at 5-min resolution = 32 * 12 = 384 timesteps
     # Ablation options from spreadsheet: 32h, 36h, 48h
-<<<<<<< HEAD
-    "context_length":   384//2,        # 384//2 = 16h (experiments have shown that we must concentrate the window, try 384//3 = 12 too)
-    "prediction_length": 96,           # 8h ahead
-=======
-    "context_length":   384//2,        # 16h (experiments have shown that we must concentrate the window, try 384//3 = 12 too)
-    "prediction_length": 96//2,           # 4h ahead
->>>>>>> 3f831a3dcd34d9d78aa54ee49296b4adce065d51
+    "context_length":    192,          # 16h window (192 * 5m = 960m = 16h)
+    "prediction_length": 48,           # 4h ahead
     "patch_length":      16,           # 80 min per patch → 12 patches per 16h window
     "patch_stride":      16,           # non-overlapping patches
     "d_model":           64,
@@ -89,23 +84,12 @@ CFG: dict[str, Any] = {
     "head_dropout":      0.2,
     "mode":              "mix_channel",  # "common_channel" or "mix_channel"
     "gated_attn":        True,
-<<<<<<< HEAD
-    "self_attn":         True,          # tiny self-attn across patches (optional)
-
-    # ── Pretraining heads ──────────────────────────────────────────────────
-    "use_anomaly_head":       True,
-    "forecast_loss_weight":   1.0,
-    "anomaly_loss_weight":    2.0,    # upweight anomaly to match experiment focus
-    # inter-patch anoamly head may have a 1:3 weighting with above,
-=======
     "self_attn":         True,           # tiny self-attn across patches (optional)
 
     # ── Pretraining heads ──────────────────────────────────────────────────
+    "use_anomaly_head":       True,
     "forecast_loss_weight":   1.5,
     "anomaly_loss_weight":    3.0,    # upweight anomaly to match experiment focus
-    "window_anomaly_loss_weight": 2.0, # inter-patch anomaly head 1:3 weighting
-    # inter-patch anomaly head may have a 1:3 weighting with above,
->>>>>>> 3f831a3dcd34d9d78aa54ee49296b4adce065d51
     # so if anomaly_loss_weight is 3.0 this may be 1.0 or 1.5.
 
     # ── Patch labelling ────────────────────────────────────────────────────
@@ -152,7 +136,6 @@ def build_backbone(cfg: dict, pos_weight: Optional[float] = None) -> PatchTSMixe
         head_dropout=cfg["head_dropout"],
         forecast_loss_weight=cfg["forecast_loss_weight"],
         anomaly_loss_weight=cfg["anomaly_loss_weight"],
-        window_anomaly_loss_weight=cfg.get("window_anomaly_loss_weight", 0.0),
         pos_weight=pos_weight,
     )
     model.summary()
@@ -168,7 +151,7 @@ def run_one_epoch(
     grad_scaler = None,
 ) -> dict[str, float]:
     model.train(train)
-    totals: dict[str, float] = {"total": 0.0, "forecast": 0.0, "anomaly": 0.0, "window_anomaly": 0.0}
+    totals: dict[str, float] = {"total": 0.0, "forecast": 0.0, "anomaly": 0.0}
     n = 0
 
     ctx = torch.enable_grad() if train else torch.no_grad()
@@ -193,8 +176,6 @@ def run_one_epoch(
                 totals["forecast"] += out.forecast_loss.item() * bs
             if out.anomaly_loss is not None:
                 totals["anomaly"] += out.anomaly_loss.item() * bs
-            if hasattr(out, "window_anomaly_loss") and out.window_anomaly_loss is not None:
-                totals["window_anomaly"] += out.window_anomaly_loss.item() * bs
 
             n += bs
 
@@ -253,8 +234,7 @@ def pretrain(
         loss_parts = (
             f"total={tr['total']:.4f}  "
             f"forecast(x{model.forecast_loss_weight:.1f})={tr['forecast']:.4f}  "
-            f"anomaly(x{model.anomaly_loss_weight:.1f})={tr['anomaly']:.4f}  "
-            f"win_anomaly(x{model.window_anomaly_loss_weight:.1f})={tr['window_anomaly']:.4f}"
+            f"anomaly(x{model.anomaly_loss_weight:.1f})={tr['anomaly']:.4f}"
         )
         print(
             f"[pretrain] epoch {epoch:03d}/{cfg['pretrain_epochs']}  "
@@ -328,7 +308,6 @@ if __name__ == "__main__":
     parser.add_argument("--num_layers",      type=int,   default=CFG["num_layers"])
     parser.add_argument("--forecast_loss_weight", type=float, default=CFG["forecast_loss_weight"])
     parser.add_argument("--anomaly_loss_weight", type=float, default=CFG["anomaly_loss_weight"])
-    parser.add_argument("--window_anomaly_loss_weight", type=float, default=CFG["window_anomaly_loss_weight"])
     parser.add_argument("--univariate",      action="store_true")
     parser.add_argument("--level",           type=str,   default=CFG["classification_level"], choices=["patch", "window"])
     parser.add_argument("--checkpoint_name", type=str,   default="patchtsmixer_backbone_final.pt")
@@ -344,7 +323,6 @@ if __name__ == "__main__":
     CFG["num_layers"]       = args.num_layers
     CFG["forecast_loss_weight"] = args.forecast_loss_weight
     CFG["anomaly_loss_weight"]  = args.anomaly_loss_weight
-    CFG["window_anomaly_loss_weight"] = args.window_anomaly_loss_weight
     CFG["univariate_test"]  = args.univariate
     CFG["classification_level"] = args.level
     CFG["checkpoint_name"]  = args.checkpoint_name
