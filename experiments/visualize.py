@@ -65,9 +65,19 @@ def plot_predictions(dataset, y_pred, cm, out_path: str, color: str, title: str)
     ax.fill_between(dataset.times, y_min, y_max, where=(gt > 0.5), 
                     color='black', alpha=0.15, step='pre', label='Ground Truth ICME')
     
-    edges = np.diff(np.concatenate(([0], gt, [0])))
-    starts = dataset.times[edges == 1]
-    ends = dataset.times[edges == -1]
+    starts = []
+    ends = []
+    in_icme = False
+    for i in range(len(gt)):
+        if gt[i] > 0.5 and not in_icme:
+            starts.append(dataset.times[i])
+            in_icme = True
+        elif gt[i] <= 0.5 and in_icme:
+            ends.append(dataset.times[i])
+            in_icme = False
+            
+    if in_icme:
+        ends.append(dataset.times[-1])
     
     for s, e in zip(starts, ends):
         ax.axvline(s, color='black', linestyle='--', alpha=0.8)
