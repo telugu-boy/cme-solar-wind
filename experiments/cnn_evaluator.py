@@ -128,23 +128,13 @@ def extract_raw_features(
 
 
 class DownstreamCNN(nn.Module):
-    def __init__(self, in_features: int, hidden_channels: int = 128, level: str = "patch", 
-                 is_latent: bool = False, C: int = 10, D: int = 64, proj_channels: int = 4):
+    def __init__(self, in_features: int, hidden_channels: int = 128, level: str = "patch"):
         super().__init__()
         self.level = level
-        self.is_latent = is_latent
-        self.C = C
-        self.D = D
-
-        if self.is_latent:
-            self.channel_proj = nn.Conv2d(self.C, proj_channels, kernel_size=1)
-            cnn_in = proj_channels * self.D
-        else:
-            cnn_in = in_features
 
         # Expanded temporal receptive field (kernel_size=5) & heavy regularization
         self.net = nn.Sequential(
-            nn.Conv1d(cnn_in, hidden_channels, kernel_size=5, padding=2),
+            nn.Conv1d(in_features, hidden_channels, kernel_size=5, padding=2),
             nn.BatchNorm1d(hidden_channels),
             nn.ReLU(),
             nn.Dropout(0.3),
@@ -156,19 +146,8 @@ class DownstreamCNN(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self.is_latent:
-            # x is (B, P, C*D)
-            B, P, CD = x.shape
-            x = x.view(B, P, self.C, self.D)
-            # Permute to (B, C, P, D) for Conv2d
-            x = x.permute(0, 2, 1, 3)
-            # Mix channels
-            x = self.channel_proj(x) # (B, proj_channels, P, D)
-            # Flatten mixed channels and embeddings for 1D CNN over P
-            x = x.permute(0, 1, 3, 2).reshape(B, -1, P) # (B, proj_channels * D, P)
-        else:
-            # x is (B, P, in_features) -> (B, in_features, P)
-            x = x.transpose(1, 2)
+        # x is (B, P, in_features) -> (B, in_features, P)
+        x = x.transpose(1, 2)
             
         logits = self.net(x) # (B, 1, P)
         
@@ -200,11 +179,7 @@ def fit_cnn(X_train: np.ndarray, y_train: np.ndarray, cfg: dict, level: str = "p
     model = DownstreamCNN(
         in_features, 
         hidden_channels=128, 
-        level=level, 
-        is_latent=is_latent,
-        C=cfg.get("_n_features", 10),
-        D=cfg.get("d_model", 64),
-        proj_channels=cfg.get("proj_channels", 4)
+        level=level
     ).to(device)
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
     criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(pos_weight, device=device))
@@ -248,8 +223,10 @@ def evaluate_classifier(
     
     y_pred = y_pred.cpu().numpy().flatten()
     y_prob = y_prob.cpu().numpy().flatten()
+    # Calculate metrics
     y_test_int = y_test.astype(int).flatten()
-
+    from sklearn.metrics import confusion_matrix
+    cm = confusion_matrix(y_test_int, y_pred)
     prec, rec, f1, _ = precision_recall_fscore_support(
         y_test_int, y_pred, average="binary", zero_division=0
     )
@@ -263,6 +240,7 @@ def evaluate_classifier(
         target_names=["ambient", "ICME"],
         zero_division=0,
     ))
+    print(f"Confusion Matrix: TN={cm[0,0]}, FP={cm[0,1]}, FN={cm[1,0]}, TP={cm[1,1]}")
     print(f"AUC ROC: {roc_auc:.4f} | AUC PRC: {pr_auc:.4f} | Test LogLoss: {test_loss:.4f}")
 
     return {
@@ -271,7 +249,10 @@ def evaluate_classifier(
         "f1": f1, 
         "roc_auc": roc_auc, 
         "pr_auc": pr_auc,
-        "logloss": test_loss
+        "logloss": test_loss,
+        "y_prob": y_prob,
+        "y_pred": y_pred,
+        "cm": cm
     }
 
 
@@ -381,8 +362,33 @@ def main():
     print("=" * 60)
 
     results = {}
-    results["CNN on latent"] = evaluate_classifier(cnn_lat, X_te_lat, y_te,     "CNN on latent representation", device=device)
-    results["CNN on raw baseline"] = evaluate_classifier(cnn_raw, X_te_raw, y_te_raw, "CNN on raw data (baseline)", device=device)
+    res_lat = evaluate_classifier(cnn_lat, X_te_lat, y_te, "CNN on latent representation", device=device)
+    results["CNN on latent"] = res_lat
+    
+    res_raw = evaluate_classifier(cnn_raw, X_te_raw, y_te_raw, "CNN on raw data (baseline)", device=device)
+    results["CNN on raw baseline"] = res_raw
+    
+    # Visualizations
+    from experiments.visualize import plot_predictions
+    import os
+    ckpt_name = os.path.splitext(cfg["checkpoint_name"])[0]
+    
+    plot_predictions(
+        test_ds, 
+        res_lat["y_pred"], 
+        res_lat["cm"], 
+        f"visualizations/{ckpt_name}_cnn_latent.png", 
+        "orange", 
+        "CNN Latent Predictions"
+    )
+    plot_predictions(
+        test_ds, 
+        res_raw["y_pred"], 
+        res_raw["cm"], 
+        f"visualizations/{ckpt_name}_cnn_raw.png", 
+        "brown", 
+        "CNN Raw Baseline Predictions"
+    )
 
     print("\n── Summary Metrics ──────────────────────────────────────────")
     for name, metrics in results.items():
@@ -390,7 +396,8 @@ def main():
             print(f"  {name:<20}  F1={metrics['f1']:.4f}  "
                   f"P={metrics['precision']:.4f}  R={metrics['recall']:.4f}  "
                   f"ROC_AUC={metrics['roc_auc']:.4f}  PR_AUC={metrics['pr_auc']:.4f}  "
-                  f"LogLoss={metrics['logloss']:.4f}")
+                  f"LogLoss={metrics['logloss']:.4f}  "
+                  f"CM=[TN:{metrics['cm'][0,0]} FP:{metrics['cm'][0,1]} FN:{metrics['cm'][1,0]} TP:{metrics['cm'][1,1]}]")
 
     # results_df = pd.DataFrame(results).T
     # results_dir = Path(cfg["results_dir"])

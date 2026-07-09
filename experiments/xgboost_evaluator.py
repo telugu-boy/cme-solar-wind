@@ -129,8 +129,9 @@ def extract_raw_features(
 def fit_xgb(X_train: np.ndarray, y_train: np.ndarray, cfg: dict):
     # Compute scale_pos_weight for XGBoost imbalance handling
     n_pos = int(y_train.sum())
-    n_neg = len(y_train) - n_pos
-    scale_pos_weight = n_neg / max(n_pos, 1)
+    n_neg = y_train.size - n_pos
+    # Dampen the massive pos_weight using a square root scale to improve precision
+    scale_pos_weight = np.sqrt(n_neg / max(n_pos, 1))
     
     params = dict(cfg["xgb_params"])
     params["scale_pos_weight"] = scale_pos_weight
@@ -181,6 +182,8 @@ def evaluate_classifier(
 
     # Calculate metrics
     y_test_int = y_test.astype(int)
+    from sklearn.metrics import confusion_matrix
+    cm = confusion_matrix(y_test_int, y_pred)
     prec, rec, f1, _ = precision_recall_fscore_support(
         y_test_int, y_pred, average="binary", zero_division=0
     )
@@ -194,6 +197,7 @@ def evaluate_classifier(
         target_names=["ambient", "ICME"],
         zero_division=0,
     ))
+    print(f"Confusion Matrix: TN={cm[0,0]}, FP={cm[0,1]}, FN={cm[1,0]}, TP={cm[1,1]}")
     print(f"AUC ROC: {roc_auc:.4f} | AUC PRC: {pr_auc:.4f} | Test LogLoss: {test_loss:.4f}")
 
     return {
@@ -202,7 +206,10 @@ def evaluate_classifier(
         "f1": f1, 
         "roc_auc": roc_auc, 
         "pr_auc": pr_auc,
-        "logloss": test_loss
+        "logloss": test_loss,
+        "y_prob": y_prob,
+        "y_pred": y_pred,
+        "cm": cm
     }
 
 
@@ -324,8 +331,33 @@ def main():
     print("=" * 60)
 
     results = {}
-    results["XGB on latent"] = evaluate_classifier(xgb_lat, X_te_lat, y_te,     "XGB on latent representation", device=device)
-    results["XGB on raw"]    = evaluate_classifier(xgb_raw, X_te_raw, y_te_raw, "XGB on raw data (baseline)", device=device)
+    res_lat = evaluate_classifier(xgb_lat, X_te_lat, y_te, "XGBoost on latent representation", device=device)
+    results["XGBoost on latent"] = res_lat
+    
+    res_raw = evaluate_classifier(xgb_raw, X_te_raw, y_te_raw, "XGBoost on raw data (baseline)", device=device)
+    results["XGBoost on raw baseline"] = res_raw
+    
+    # Visualizations
+    from experiments.visualize import plot_predictions
+    import os
+    ckpt_name = os.path.splitext(cfg["checkpoint_name"])[0]
+    
+    plot_predictions(
+        test_ds, 
+        res_lat["y_pred"], 
+        res_lat["cm"], 
+        f"visualizations/{ckpt_name}_xgb_latent.png", 
+        "orange", 
+        "XGBoost Latent Predictions"
+    )
+    plot_predictions(
+        test_ds, 
+        res_raw["y_pred"], 
+        res_raw["cm"], 
+        f"visualizations/{ckpt_name}_xgb_raw.png", 
+        "brown", 
+        "XGBoost Raw Baseline Predictions"
+    )
 
     print("\n── Summary Metrics ──────────────────────────────────────────")
     for name, metrics in results.items():
@@ -333,7 +365,8 @@ def main():
             print(f"  {name:<20}  F1={metrics['f1']:.4f}  "
                   f"P={metrics['precision']:.4f}  R={metrics['recall']:.4f}  "
                   f"ROC_AUC={metrics['roc_auc']:.4f}  PR_AUC={metrics['pr_auc']:.4f}  "
-                  f"LogLoss={metrics['logloss']:.4f}")
+                  f"LogLoss={metrics['logloss']:.4f}  "
+                  f"CM=[TN:{metrics['cm'][0,0]} FP:{metrics['cm'][0,1]} FN:{metrics['cm'][1,0]} TP:{metrics['cm'][1,1]}]")
 
     # results_df = pd.DataFrame(results).T
     # results_dir = Path(cfg["results_dir"])
