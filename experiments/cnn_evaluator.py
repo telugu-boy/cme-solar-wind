@@ -46,6 +46,7 @@ def extract_features(
     dataset: OmniPatchDataset,
     cfg: dict,
     level: str = "patch",    # "patch" or "window"
+    flatten: bool = True
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Extract latent features and labels for downstream classification.
@@ -67,18 +68,18 @@ def extract_features(
             if level == "patch":
                 # (B, C, P, D) per-patch embeddings, preserve channels
                 h = model.get_latent_representations(past)  # (B, C, P, D)
-                B, C, P, D = h.shape
-                # Flatten C and D to pass into CNN: (B, P, C * D)
-                h_flat = h.permute(0, 2, 1, 3).reshape(B, P, C * D)
-                X_list.append(h_flat.cpu().numpy())
+                if flatten:
+                    B, C, P, D = h.shape
+                    h = h.permute(0, 2, 1, 3).reshape(B, P, C * D)
+                X_list.append(h.cpu().numpy())
                 y_list.append(p_labels)
 
             else:  # window-level
                 h = model.get_latent_representations(past)  # (B, C, P, D)
-                B, C, P, D = h.shape
-                # Flatten C and D to pass into CNN: (B, P, C * D)
-                h_flat = h.permute(0, 2, 1, 3).reshape(B, P, C * D)
-                X_list.append(h_flat.cpu().numpy())
+                if flatten:
+                    B, C, P, D = h.shape
+                    h = h.permute(0, 2, 1, 3).reshape(B, P, C * D)
+                X_list.append(h.cpu().numpy())
                 # Window is ICME if any patch is ICME
                 y_list.append((p_labels.max(axis=1) > 0.5).astype(np.float32))
 
@@ -128,13 +129,24 @@ def extract_raw_features(
 
 
 class DownstreamCNN(nn.Module):
-    def __init__(self, in_features: int, hidden_channels: int = 128, level: str = "patch"):
+    def __init__(self, in_features: int, hidden_channels: int = 128, level: str = "patch",
+                 is_latent: bool = False, C: int = 10, D: int = 64, d_proj: int = 8):
         super().__init__()
         self.level = level
+        self.is_latent = is_latent
+        self.C = C
+        self.D = D
+        
+        if self.is_latent:
+            # Compress D=64 -> D'=8 independently for each channel
+            self.d_compress = nn.Linear(D, d_proj)
+            cnn_in = C * d_proj
+        else:
+            cnn_in = in_features
 
         # Expanded temporal receptive field (kernel_size=5) & heavy regularization
         self.net = nn.Sequential(
-            nn.Conv1d(in_features, hidden_channels, kernel_size=5, padding=2),
+            nn.Conv1d(cnn_in, hidden_channels, kernel_size=5, padding=2),
             nn.BatchNorm1d(hidden_channels),
             nn.ReLU(),
             nn.Dropout(0.3),
@@ -146,8 +158,16 @@ class DownstreamCNN(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x is (B, P, in_features) -> (B, in_features, P)
-        x = x.transpose(1, 2)
+        if self.is_latent:
+            # x is (B, C, P, D)
+            # Compress D: (B, C, P, D) -> (B, C, P, d_proj)
+            x = self.d_compress(x)
+            B, C, P, d_proj = x.shape
+            # Flatten to (B, C * d_proj, P) for Conv1d
+            x = x.permute(0, 1, 3, 2).reshape(B, C * d_proj, P)
+        else:
+            # x is (B, P, in_features) -> (B, in_features, P)
+            x = x.transpose(1, 2)
             
         logits = self.net(x) # (B, 1, P)
         
@@ -175,11 +195,19 @@ def fit_cnn(X_train: np.ndarray, y_train: np.ndarray, cfg: dict, level: str = "p
     dataset = TensorDataset(X_t, y_t)
     loader = DataLoader(dataset, batch_size=256, shuffle=True)
     
-    in_features = X_train.shape[-1]
+    if is_latent:
+        in_features = X_train.shape[1] * 8 # C * d_proj
+    else:
+        in_features = X_train.shape[-1]
+        
     model = DownstreamCNN(
         in_features, 
         hidden_channels=128, 
-        level=level
+        level=level,
+        is_latent=is_latent,
+        C=cfg.get("_n_features", 10),
+        D=cfg.get("d_model", 64),
+        d_proj=8
     ).to(device)
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
     criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(pos_weight, device=device))
@@ -325,8 +353,8 @@ def main():
     level = cfg["classification_level"]
     print(f"\n[downstream] Extracting {level}-level latents...")
 
-    X_tr_lat, y_tr = extract_features(model, train_ds, cfg, level=level)
-    X_va_lat, y_va = extract_features(model, val_ds,   cfg, level=level)
+    X_tr_lat, y_tr = extract_features(model, train_ds, cfg, level=level, flatten=False)
+    X_va_lat, y_va = extract_features(model, val_ds,   cfg, level=level, flatten=False)
     
     # Concatenate and immediately delete old arrays to prevent massive OOM memory spikes
     X_tr_all = np.concatenate([X_tr_lat, X_va_lat])
@@ -334,7 +362,7 @@ def main():
     del X_tr_lat, X_va_lat, y_tr, y_va
     import gc; gc.collect()
 
-    X_te_lat, y_te = extract_features(model, test_ds,  cfg, level=level)
+    X_te_lat, y_te = extract_features(model, test_ds,  cfg, level=level, flatten=False)
 
     print(
         f"[downstream] Latent dimensions: train={X_tr_all.shape}  test={X_te_lat.shape}  "
