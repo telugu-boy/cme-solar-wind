@@ -45,15 +45,13 @@ def plot_predictions(dataset, y_pred, cm, out_path: str, color: str, title: str)
     # Features are normalized. F is at index 0, flow_speed is at index 4
     # based on CFG["raw_feature_cols"] = ["F", "BX_GSE", "BY_GSE", "BZ_GSE", "flow_speed", ...]
     F_field = dataset.data[:, 0]
-    flow_speed = dataset.data[:, 4]
     
     fig, ax = plt.subplots(figsize=(24, 6), dpi=300)
     
     ax.plot(dataset.times, F_field, color='green', alpha=0.7, label='Total B-field (F)')
-    ax.plot(dataset.times, flow_speed, color='purple', alpha=0.7, label='Solar Wind Speed')
     
-    y_min = min(F_field.min(), flow_speed.min())
-    y_max = max(F_field.max(), flow_speed.max())
+    y_min = F_field.min()
+    y_max = F_field.max()
     
     # Overlay predictions
     # If pred_ts > 0.5 (majority of overlapping windows predict ICME)
@@ -88,7 +86,7 @@ def plot_predictions(dataset, y_pred, cm, out_path: str, color: str, title: str)
     ax.set_ylabel("Normalized Features")
     
     # Add confusion matrix
-    cm_text = f"Confusion Matrix:\nTN: {cm[0,0]:,}  FP: {cm[0,1]:,}\nFN: {cm[1,0]:,}  TP: {cm[1,1]:,}"
+    cm_text = f"Confusion Matrix:\nTP: {cm[1,1]:,}  FP: {cm[0,1]:,}\nFN: {cm[1,0]:,}  TN: {cm[0,0]:,}"
     ax.text(0.01, 0.95, cm_text, transform=ax.transAxes, fontsize=12, 
             verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
             

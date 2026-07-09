@@ -197,7 +197,7 @@ def evaluate_classifier(
         target_names=["ambient", "ICME"],
         zero_division=0,
     ))
-    print(f"Confusion Matrix: TN={cm[0,0]}, FP={cm[0,1]}, FN={cm[1,0]}, TP={cm[1,1]}")
+    print(f"Confusion Matrix: TP={cm[1,1]}, FP={cm[0,1]}, FN={cm[1,0]}, TN={cm[0,0]}")
     print(f"AUC ROC: {roc_auc:.4f} | AUC PRC: {pr_auc:.4f} | Test LogLoss: {test_loss:.4f}")
 
     return {
@@ -366,7 +366,7 @@ def main():
                   f"P={metrics['precision']:.4f}  R={metrics['recall']:.4f}  "
                   f"ROC_AUC={metrics['roc_auc']:.4f}  PR_AUC={metrics['pr_auc']:.4f}  "
                   f"LogLoss={metrics['logloss']:.4f}  "
-                  f"CM=[TN:{metrics['cm'][0,0]} FP:{metrics['cm'][0,1]} FN:{metrics['cm'][1,0]} TP:{metrics['cm'][1,1]}]")
+                  f"CM=[TP:{metrics['cm'][1,1]} FP:{metrics['cm'][0,1]} FN:{metrics['cm'][1,0]} TN:{metrics['cm'][0,0]}]")
 
     # results_df = pd.DataFrame(results).T
     # results_dir = Path(cfg["results_dir"])
