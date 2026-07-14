@@ -113,6 +113,7 @@ CFG: dict[str, Any] = {
     # ── Output ─────────────────────────────────────────────────────────────
     "checkpoint_dir": "checkpoints",
     "results_dir":    "results",
+    "model_name":     None,
 }
 
 
@@ -311,6 +312,7 @@ if __name__ == "__main__":
     parser.add_argument("--univariate",      action="store_true")
     parser.add_argument("--level",           type=str,   default=CFG["classification_level"], choices=["patch", "window"])
     parser.add_argument("--checkpoint_name", type=str,   default="patchtsmixer_backbone_final.pt")
+    parser.add_argument("--model_name",      type=str,   default=None, help="If provided, saves to results/full/<model_name>")
     args = parser.parse_args()
 
     CFG["context_length"]   = args.context_length
@@ -326,5 +328,11 @@ if __name__ == "__main__":
     CFG["univariate_test"]  = args.univariate
     CFG["classification_level"] = args.level
     CFG["checkpoint_name"]  = args.checkpoint_name
+    
+    if args.model_name:
+        CFG["model_name"] = args.model_name
+        model_dir = f"results/full/{args.model_name}"
+        CFG["checkpoint_dir"] = model_dir
+        CFG["results_dir"] = model_dir
 
     main(CFG)
