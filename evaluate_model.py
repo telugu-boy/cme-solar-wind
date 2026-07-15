@@ -8,8 +8,10 @@ import gc
 from sklearn.metrics import classification_report
 
 # Import required functions from existing evaluators
-from experiments.loaders import read_omni_cache, get_cr_icme_dataframe, engineer_features, make_datasets
+from experiments.loaders import read_omni_cache, get_cr_icme_dataframe, engineer_features, make_datasets, OmniPatchDataset, build_icme_intervals
 from experiments.visualize import plot_predictions
+from experiments.plot_utils import plot_roc_prc, plot_1year_slice
+import pickle
 
 from experiments.cnn_evaluator import (
     extract_features as cnn_extract_features,
@@ -52,6 +54,24 @@ def run_evaluation(checkpoint_path: Path):
         omni_df, cr_icmes, feature_cols, cfg, scaler=scaler
     )
 
+    # Create 2018 slice dataset
+    print("Creating 2018 1-year slice dataset...")
+    omni_df_2018 = omni_df.loc["2018-01-01":"2018-12-31"].copy()
+    omni_df_2018.interpolate(limit=6, limit_direction="both", inplace=True)
+    omni_df_2018.fillna(0.0, inplace=True)
+    data_2018 = scaler.transform(omni_df_2018[feature_cols].values).astype(np.float32)
+    icme_intervals_2018 = build_icme_intervals(cr_icmes)
+    ds_2018 = OmniPatchDataset(
+        data_2018, omni_df_2018.index,
+        icme_intervals=icme_intervals_2018,
+        context_length=cfg["context_length"],
+        prediction_length=cfg["prediction_length"],
+        patch_length=cfg["patch_length"],
+        patch_stride=cfg["patch_stride"],
+        overlap_threshold=cfg["overlap_threshold"],
+        window_stride=cfg["window_stride"],
+    )
+
     # Dictionary to hold the raw results
     res = {}
     
@@ -86,6 +106,34 @@ def run_evaluation(checkpoint_path: Path):
 
     plot_predictions(test_ds, res["CNN on latent"]["y_pred"], res["CNN on latent"]["cm"], str(out_dir / f"{ckpt_name}_cnn_latent.png"), "orange", "CNN Latent Predictions")
     plot_predictions(test_ds, res["CNN on raw (baseline)"]["y_pred"], res["CNN on raw (baseline)"]["cm"], str(out_dir / f"{ckpt_name}_cnn_raw.png"), "brown", "CNN Raw Predictions")
+
+    # Save checkpoints
+    torch.save(cnn_lat.state_dict(), out_dir / f"{ckpt_name}_cnn_latent.pt")
+    torch.save(cnn_raw.state_dict(), out_dir / f"{ckpt_name}_cnn_raw.pt")
+
+    # Plot ROC and PRC
+    plot_roc_prc(y_te_cnn.flatten(), res["CNN on latent"]["y_prob"], 
+                 str(out_dir / f"{ckpt_name}_cnn_latent_roc.png"), 
+                 str(out_dir / f"{ckpt_name}_cnn_latent_prc.png"), "CNN Latent")
+    plot_roc_prc(y_te_raw_cnn.flatten(), res["CNN on raw (baseline)"]["y_prob"], 
+                 str(out_dir / f"{ckpt_name}_cnn_raw_roc.png"), 
+                 str(out_dir / f"{ckpt_name}_cnn_raw_prc.png"), "CNN Raw")
+
+    # 1-year slice plots
+    X_2018_lat_cnn, _ = cnn_extract_features(cnn_model, ds_2018, cfg, level=level, flatten=False)
+    X_2018_raw_cnn, _ = cnn_extract_raw(ds_2018, cfg, level=level)
+    
+    cnn_lat.eval()
+    cnn_raw.eval()
+    with torch.no_grad():
+        logits_lat = cnn_lat(torch.tensor(X_2018_lat_cnn, dtype=torch.float32, device=device))
+        prob_lat_2018 = torch.sigmoid(logits_lat).cpu().numpy().flatten()
+        
+        logits_raw = cnn_raw(torch.tensor(X_2018_raw_cnn, dtype=torch.float32, device=device))
+        prob_raw_2018 = torch.sigmoid(logits_raw).cpu().numpy().flatten()
+        
+    plot_1year_slice(ds_2018, prob_lat_2018, str(out_dir / f"{ckpt_name}_cnn_latent_1year.png"), "CNN Latent", color="orange")
+    plot_1year_slice(ds_2018, prob_raw_2018, str(out_dir / f"{ckpt_name}_cnn_raw_1year.png"), "CNN Raw", color="brown")
 
     del cnn_model, cnn_lat, cnn_raw; gc.collect()
 
@@ -131,6 +179,40 @@ def run_evaluation(checkpoint_path: Path):
 
     plot_predictions(test_ds, res["XGBoost on latent"]["y_pred"], res["XGBoost on latent"]["cm"], str(out_dir / f"{ckpt_name}_xgb_latent.png"), "orange", "XGBoost Latent Predictions")
     plot_predictions(test_ds, res["XGBoost on raw (baseline)"]["y_pred"], res["XGBoost on raw (baseline)"]["cm"], str(out_dir / f"{ckpt_name}_xgb_raw.png"), "brown", "XGBoost Raw Predictions")
+
+    # Save checkpoints
+    with open(out_dir / f"{ckpt_name}_xgb_latent.pkl", "wb") as f:
+        pickle.dump(xgb_lat, f)
+    with open(out_dir / f"{ckpt_name}_xgb_raw.pkl", "wb") as f:
+        pickle.dump(xgb_raw, f)
+
+    # Plot ROC and PRC
+    plot_roc_prc(y_te_xgb.flatten(), res["XGBoost on latent"]["y_prob"], 
+                 str(out_dir / f"{ckpt_name}_xgb_latent_roc.png"), 
+                 str(out_dir / f"{ckpt_name}_xgb_latent_prc.png"), "XGBoost Latent")
+    plot_roc_prc(y_te_raw_xgb.flatten(), res["XGBoost on raw (baseline)"]["y_prob"], 
+                 str(out_dir / f"{ckpt_name}_xgb_raw_roc.png"), 
+                 str(out_dir / f"{ckpt_name}_xgb_raw_prc.png"), "XGBoost Raw")
+
+    # 1-year slice plots
+    X_2018_lat_xgb, _ = xgb_extract_features(xgb_model, ds_2018, cfg, level=level)
+    X_2018_raw_xgb, _ = xgb_extract_raw(ds_2018, cfg, level=level)
+    
+    if "cuda" in str(xgb_lat.get_params().get("device", "")) or "cuda" in str(device):
+        X_2018_lat_xgb_dev = torch.as_tensor(X_2018_lat_xgb, device=device, dtype=torch.float32)
+        X_2018_raw_xgb_dev = torch.as_tensor(X_2018_raw_xgb, device=device, dtype=torch.float32)
+    else:
+        X_2018_lat_xgb_dev = X_2018_lat_xgb
+        X_2018_raw_xgb_dev = X_2018_raw_xgb
+
+    prob_lat_2018_xgb = xgb_lat.predict_proba(X_2018_lat_xgb_dev)[:, 1]
+    prob_raw_2018_xgb = xgb_raw.predict_proba(X_2018_raw_xgb_dev)[:, 1]
+    
+    if hasattr(prob_lat_2018_xgb, "cpu"): prob_lat_2018_xgb = prob_lat_2018_xgb.cpu().numpy()
+    if hasattr(prob_raw_2018_xgb, "cpu"): prob_raw_2018_xgb = prob_raw_2018_xgb.cpu().numpy()
+
+    plot_1year_slice(ds_2018, prob_lat_2018_xgb, str(out_dir / f"{ckpt_name}_xgb_latent_1year.png"), "XGBoost Latent", color="orange")
+    plot_1year_slice(ds_2018, prob_raw_2018_xgb, str(out_dir / f"{ckpt_name}_xgb_raw_1year.png"), "XGBoost Raw", color="brown")
 
     del xgb_model, xgb_lat, xgb_raw; gc.collect()
     
