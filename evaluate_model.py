@@ -32,7 +32,7 @@ from experiments.xgboost_evaluator import (
     build_backbone_from_config as xgb_build_backbone
 )
 
-def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = True, use_existing_checkpoints: bool = False):
+def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = True, use_existing_checkpoints: bool = False, start_date: str = '2015-07-01', end_date: str = '2016-07-01'):
     out_dir = checkpoint_path.parent
     
     chkpts_dir = out_dir / "checkpoints"
@@ -67,9 +67,9 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
         omni_df, cr_icmes, feature_cols, cfg, scaler=scaler
     )
 
-    # Create 1-year slice dataset (July 2015 - July 2016)
-    print("Creating July 2015 - July 2016 1-year slice dataset...")
-    omni_df_1yr = omni_df.loc["2015-07-01":"2016-07-01"].copy()
+    # Create slice dataset based on start and end dates
+    print(f"Creating {start_date} to {end_date} slice dataset...")
+    omni_df_1yr = omni_df.loc[start_date:end_date].copy()
     omni_df_1yr.interpolate(limit=6, limit_direction="both", inplace=True)
     omni_df_1yr.fillna(0.0, inplace=True)
     data_1yr = scaler.transform(omni_df_1yr[feature_cols].values).astype(np.float32)
@@ -162,7 +162,7 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
     
         del X_1yr_lat_cnn, X_1yr_raw_cnn; gc.collect()
         
-        plot_1year_slice(ds_1yr, prob_lat_1yr, str(slice_dir / f"{ckpt_name}_cnn_latent_1year.png"), "CNN Latent", color="purple")
+        plot_1year_slice(ds_1yr, prob_lat_1yr, str(slice_dir / f"{ckpt_name}_cnn_latent_1year.png"), "CNN Latent", color="purple", start_date=start_date, end_date=end_date)
         plot_1year_slice(ds_1yr, prob_raw_1yr, str(slice_dir / f"{ckpt_name}_cnn_raw_1year.png"), "CNN Raw", color="darkgoldenrod")
     
         del cnn_model, cnn_lat, cnn_raw; gc.collect()
@@ -260,7 +260,7 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
         if hasattr(prob_lat_1yr_xgb, "cpu"): prob_lat_1yr_xgb = prob_lat_1yr_xgb.cpu().numpy()
         if hasattr(prob_raw_1yr_xgb, "cpu"): prob_raw_1yr_xgb = prob_raw_1yr_xgb.cpu().numpy()
 
-        plot_1year_slice(ds_1yr, prob_lat_1yr_xgb, str(slice_dir / f"{ckpt_name}_xgb_latent_1year.png"), "XGBoost Latent", color="purple")
+        plot_1year_slice(ds_1yr, prob_lat_1yr_xgb, str(slice_dir / f"{ckpt_name}_xgb_latent_1year.png"), "XGBoost Latent", color="purple", start_date=start_date, end_date=end_date)
         plot_1year_slice(ds_1yr, prob_raw_1yr_xgb, str(slice_dir / f"{ckpt_name}_xgb_raw_1year.png"), "XGBoost Raw", color="darkgoldenrod")
     
         del xgb_model, xgb_lat, xgb_raw; gc.collect()
@@ -332,6 +332,8 @@ if __name__ == "__main__":
     parser.add_argument("--cnn", action="store_true", help="Run CNN evaluation")
     parser.add_argument("--xgb", action="store_true", help="Run XGBoost evaluation")
     parser.add_argument("--use_existing_checkpoints", action="store_true", help="Load existing checkpoints instead of retraining")
+    parser.add_argument("--start_date", type=str, default="2015-07-01", help="Start date for plot slice (YYYY-MM-DD)")
+    parser.add_argument("--end_date", type=str, default="2016-07-01", help="End date for plot slice (YYYY-MM-DD)")
     args = parser.parse_args()
     
     if not args.cnn and not args.xgb:
@@ -340,7 +342,29 @@ if __name__ == "__main__":
         sys.exit(1)
     
     ckpt_path = Path(args.checkpoint)
-    res = run_evaluation(ckpt_path, run_cnn=args.cnn, run_xgb=args.xgb, use_existing_checkpoints=args.use_existing_checkpoints)
+    
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    package = torch.load(ckpt_path, map_location=device, weights_only=False)
+    cfg = package["cfg"]
+    
+    val_end_dt = pd.to_datetime(cfg["val_end"])
+    omni_end_dt = pd.to_datetime(cfg["omni_end"])
+    
+    try:
+        sd = pd.to_datetime(args.start_date)
+        ed = pd.to_datetime(args.end_date)
+    except Exception as e:
+        import sys
+        print(f"Error parsing dates: {e}")
+        sys.exit(1)
+        
+    if sd < val_end_dt or ed > omni_end_dt:
+        import sys
+        print(f"Error: The requested dates {args.start_date} to {args.end_date} are out of bounds of the test set.")
+        print(f"The valid test set date range is from {cfg['val_end']} to {cfg['omni_end']}.")
+        sys.exit(1)
+        
+    res = run_evaluation(ckpt_path, run_cnn=args.cnn, run_xgb=args.xgb, use_existing_checkpoints=args.use_existing_checkpoints, start_date=args.start_date, end_date=args.end_date)
     
     tsv_dir = ckpt_path.parent / "metrics_tsv"
     tsv_dir.mkdir(exist_ok=True)
@@ -352,6 +376,8 @@ if __name__ == "__main__":
 
     # Zip up the directory containing the checkpoint and outputs
     zip_target = ckpt_path.parent / f"{ckpt_path.parent.name}_results.zip"
+    if zip_target.exists():
+        zip_target.unlink()
     print(f"\nZipping up results to {zip_target}...")
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_zip_base = Path(tmpdir) / "archive"
