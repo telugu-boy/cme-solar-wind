@@ -342,10 +342,13 @@ if __name__ == "__main__":
     ckpt_path = Path(args.checkpoint)
     res = run_evaluation(ckpt_path, run_cnn=args.cnn, run_xgb=args.xgb, use_existing_checkpoints=args.use_existing_checkpoints)
     
+    tsv_dir = ckpt_path.parent / "metrics_tsv"
+    tsv_dir.mkdir(exist_ok=True)
+    
     if args.xgb:
-        format_tsv(res, ckpt_path.parent / f"{ckpt_path.stem}_xgb_results.tsv", "XGBoost")
+        format_tsv(res, tsv_dir / f"{ckpt_path.stem}_xgb_results.tsv", "XGBoost")
     if args.cnn:
-        format_tsv(res, ckpt_path.parent / f"{ckpt_path.stem}_cnn_results.tsv", "CNN")
+        format_tsv(res, tsv_dir / f"{ckpt_path.stem}_cnn_results.tsv", "CNN")
 
     # Zip up the directory containing the checkpoint and outputs
     zip_target = ckpt_path.parent / f"{ckpt_path.parent.name}_results.zip"
