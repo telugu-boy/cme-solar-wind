@@ -29,7 +29,7 @@ from experiments.xgboost_evaluator import (
     build_backbone_from_config as xgb_build_backbone
 )
 
-def run_evaluation(checkpoint_path: Path):
+def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = True):
     out_dir = checkpoint_path.parent
     
     chkpts_dir = out_dir / "checkpoints"
@@ -88,163 +88,165 @@ def run_evaluation(checkpoint_path: Path):
     ckpt_name = checkpoint_path.stem
 
     # ---------------- CNN Evaluation ----------------
-    print("\n=== Running CNN Evaluation ===")
-    cnn_model = cnn_build_backbone(cfg, state_dict).to(device)
+    if run_cnn:
+        print("\n=== Running CNN Evaluation ===")
+        cnn_model = cnn_build_backbone(cfg, state_dict).to(device)
     
-    X_tr_lat_cnn, y_tr_cnn = cnn_extract_features(cnn_model, train_ds, cfg, level=level, flatten=False)
-    X_va_lat_cnn, y_va_cnn = cnn_extract_features(cnn_model, val_ds,   cfg, level=level, flatten=False)
-    X_tr_all_cnn = np.concatenate([X_tr_lat_cnn, X_va_lat_cnn])
-    y_tr_all_cnn = np.concatenate([y_tr_cnn,    y_va_cnn])
-    del X_tr_lat_cnn, X_va_lat_cnn, y_tr_cnn, y_va_cnn; gc.collect()
-    X_te_lat_cnn, y_te_cnn = cnn_extract_features(cnn_model, test_ds,  cfg, level=level, flatten=False)
+        X_tr_lat_cnn, y_tr_cnn = cnn_extract_features(cnn_model, train_ds, cfg, level=level, flatten=False)
+        X_va_lat_cnn, y_va_cnn = cnn_extract_features(cnn_model, val_ds,   cfg, level=level, flatten=False)
+        X_tr_all_cnn = np.concatenate([X_tr_lat_cnn, X_va_lat_cnn])
+        y_tr_all_cnn = np.concatenate([y_tr_cnn,    y_va_cnn])
+        del X_tr_lat_cnn, X_va_lat_cnn, y_tr_cnn, y_va_cnn; gc.collect()
+        X_te_lat_cnn, y_te_cnn = cnn_extract_features(cnn_model, test_ds,  cfg, level=level, flatten=False)
 
-    X_tr_raw_cnn, y_tr_raw_cnn = cnn_extract_raw(train_ds, cfg, level=level)
-    X_va_raw_cnn, y_va_raw_cnn = cnn_extract_raw(val_ds,   cfg, level=level)
-    X_tr_raw_all_cnn = np.concatenate([X_tr_raw_cnn, X_va_raw_cnn])
-    y_tr_raw_all_cnn = np.concatenate([y_tr_raw_cnn, y_va_raw_cnn])
-    del X_tr_raw_cnn, X_va_raw_cnn, y_tr_raw_cnn, y_va_raw_cnn; gc.collect()
-    X_te_raw_cnn, y_te_raw_cnn = cnn_extract_raw(test_ds,  cfg, level=level)
+        X_tr_raw_cnn, y_tr_raw_cnn = cnn_extract_raw(train_ds, cfg, level=level)
+        X_va_raw_cnn, y_va_raw_cnn = cnn_extract_raw(val_ds,   cfg, level=level)
+        X_tr_raw_all_cnn = np.concatenate([X_tr_raw_cnn, X_va_raw_cnn])
+        y_tr_raw_all_cnn = np.concatenate([y_tr_raw_cnn, y_va_raw_cnn])
+        del X_tr_raw_cnn, X_va_raw_cnn, y_tr_raw_cnn, y_va_raw_cnn; gc.collect()
+        X_te_raw_cnn, y_te_raw_cnn = cnn_extract_raw(test_ds,  cfg, level=level)
 
-    cnn_lat = fit_cnn(X_tr_all_cnn, y_tr_all_cnn, cfg, level=level, is_latent=True)
-    del X_tr_all_cnn, y_tr_all_cnn; gc.collect()
+        cnn_lat = fit_cnn(X_tr_all_cnn, y_tr_all_cnn, cfg, level=level, is_latent=True)
+        del X_tr_all_cnn, y_tr_all_cnn; gc.collect()
 
-    cnn_raw = fit_cnn(X_tr_raw_all_cnn, y_tr_raw_all_cnn, cfg, level=level, is_latent=False)
-    del X_tr_raw_all_cnn, y_tr_raw_all_cnn; gc.collect()
+        cnn_raw = fit_cnn(X_tr_raw_all_cnn, y_tr_raw_all_cnn, cfg, level=level, is_latent=False)
+        del X_tr_raw_all_cnn, y_tr_raw_all_cnn; gc.collect()
 
-    res["CNN on latent"] = cnn_evaluate_classifier(cnn_lat, X_te_lat_cnn, y_te_cnn, "CNN Latent", device=device)
-    del X_te_lat_cnn; gc.collect()
+        res["CNN on latent"] = cnn_evaluate_classifier(cnn_lat, X_te_lat_cnn, y_te_cnn, "CNN Latent", device=device)
+        del X_te_lat_cnn; gc.collect()
 
-    res["CNN on raw (baseline)"] = cnn_evaluate_classifier(cnn_raw, X_te_raw_cnn, y_te_raw_cnn, "CNN Raw", device=device)
-    del X_te_raw_cnn; gc.collect()
+        res["CNN on raw (baseline)"] = cnn_evaluate_classifier(cnn_raw, X_te_raw_cnn, y_te_raw_cnn, "CNN Raw", device=device)
+        del X_te_raw_cnn; gc.collect()
     
-    res["CNN on latent"]["y_test"] = y_te_cnn
-    res["CNN on raw (baseline)"]["y_test"] = y_te_raw_cnn
+        res["CNN on latent"]["y_test"] = y_te_cnn
+        res["CNN on raw (baseline)"]["y_test"] = y_te_raw_cnn
 
-    plot_predictions(test_ds, res["CNN on latent"]["y_pred"], res["CNN on latent"]["cm"], str(test_pred_dir / f"{ckpt_name}_cnn_latent.png"), "orange", "CNN Latent Predictions")
-    plot_predictions(test_ds, res["CNN on raw (baseline)"]["y_pred"], res["CNN on raw (baseline)"]["cm"], str(test_pred_dir / f"{ckpt_name}_cnn_raw.png"), "brown", "CNN Raw Predictions")
+        plot_predictions(test_ds, res["CNN on latent"]["y_pred"], res["CNN on latent"]["cm"], str(test_pred_dir / f"{ckpt_name}_cnn_latent.png"), "orange", "CNN Latent Predictions")
+        plot_predictions(test_ds, res["CNN on raw (baseline)"]["y_pred"], res["CNN on raw (baseline)"]["cm"], str(test_pred_dir / f"{ckpt_name}_cnn_raw.png"), "brown", "CNN Raw Predictions")
 
-    # Save checkpoints
-    torch.save(cnn_lat.state_dict(), chkpts_dir / f"{ckpt_name}_cnn_latent.pt")
-    torch.save(cnn_raw.state_dict(), chkpts_dir / f"{ckpt_name}_cnn_raw.pt")
+        # Save checkpoints
+        torch.save(cnn_lat.state_dict(), chkpts_dir / f"{ckpt_name}_cnn_latent.pt")
+        torch.save(cnn_raw.state_dict(), chkpts_dir / f"{ckpt_name}_cnn_raw.pt")
 
-    # Plot ROC and PRC
-    plot_roc_prc(y_te_cnn.flatten(), res["CNN on latent"]["y_prob"], 
-                 str(roc_prc_dir / f"{ckpt_name}_cnn_latent_roc.png"), 
-                 str(roc_prc_dir / f"{ckpt_name}_cnn_latent_prc.png"), "CNN Latent")
-    plot_roc_prc(y_te_raw_cnn.flatten(), res["CNN on raw (baseline)"]["y_prob"], 
-                 str(roc_prc_dir / f"{ckpt_name}_cnn_raw_roc.png"), 
-                 str(roc_prc_dir / f"{ckpt_name}_cnn_raw_prc.png"), "CNN Raw")
+        # Plot ROC and PRC
+        plot_roc_prc(y_te_cnn.flatten(), res["CNN on latent"]["y_prob"], 
+                     str(roc_prc_dir / f"{ckpt_name}_cnn_latent_roc.png"), 
+                     str(roc_prc_dir / f"{ckpt_name}_cnn_latent_prc.png"), "CNN Latent")
+        plot_roc_prc(y_te_raw_cnn.flatten(), res["CNN on raw (baseline)"]["y_prob"], 
+                     str(roc_prc_dir / f"{ckpt_name}_cnn_raw_roc.png"), 
+                     str(roc_prc_dir / f"{ckpt_name}_cnn_raw_prc.png"), "CNN Raw")
 
-    # 1-year slice plots
-    X_1yr_lat_cnn, _ = cnn_extract_features(cnn_model, ds_1yr, cfg, level=level, flatten=False)
-    X_1yr_raw_cnn, _ = cnn_extract_raw(ds_1yr, cfg, level=level)
+        # 1-year slice plots
+        X_1yr_lat_cnn, _ = cnn_extract_features(cnn_model, ds_1yr, cfg, level=level, flatten=False)
+        X_1yr_raw_cnn, _ = cnn_extract_raw(ds_1yr, cfg, level=level)
     
-    cnn_lat.eval()
-    cnn_raw.eval()
-    with torch.no_grad():
-        logits_lat = cnn_lat(torch.tensor(X_1yr_lat_cnn, dtype=torch.float32, device=device))
-        prob_lat_1yr = torch.sigmoid(logits_lat).cpu().numpy().flatten()
+        cnn_lat.eval()
+        cnn_raw.eval()
+        with torch.no_grad():
+            logits_lat = cnn_lat(torch.tensor(X_1yr_lat_cnn, dtype=torch.float32, device=device))
+            prob_lat_1yr = torch.sigmoid(logits_lat).cpu().numpy().flatten()
         
-        logits_raw = cnn_raw(torch.tensor(X_1yr_raw_cnn, dtype=torch.float32, device=device))
-        prob_raw_1yr = torch.sigmoid(logits_raw).cpu().numpy().flatten()
+            logits_raw = cnn_raw(torch.tensor(X_1yr_raw_cnn, dtype=torch.float32, device=device))
+            prob_raw_1yr = torch.sigmoid(logits_raw).cpu().numpy().flatten()
     
-    del X_1yr_lat_cnn, X_1yr_raw_cnn; gc.collect()
+        del X_1yr_lat_cnn, X_1yr_raw_cnn; gc.collect()
         
-    plot_1year_slice(ds_1yr, prob_lat_1yr, str(slice_dir / f"{ckpt_name}_cnn_latent_1year.png"), "CNN Latent", color="orange")
-    plot_1year_slice(ds_1yr, prob_raw_1yr, str(slice_dir / f"{ckpt_name}_cnn_raw_1year.png"), "CNN Raw", color="brown")
-
-    del cnn_model, cnn_lat, cnn_raw; gc.collect()
+            plot_1year_slice(ds_1yr, prob_lat_1yr, str(slice_dir / f"{ckpt_name}_cnn_latent_1year.png"), "CNN Latent", color="orange")
+            plot_1year_slice(ds_1yr, prob_raw_1yr, str(slice_dir / f"{ckpt_name}_cnn_raw_1year.png"), "CNN Raw", color="brown")
+    
+            del cnn_model, cnn_lat, cnn_raw; gc.collect()
 
     # ---------------- XGB Evaluation ----------------
-    print("\n=== Running XGB Evaluation ===")
-    xgb_model = xgb_build_backbone(cfg, state_dict).to(device)
+    if run_xgb:
+        print("\n=== Running XGB Evaluation ===")
+        xgb_model = xgb_build_backbone(cfg, state_dict).to(device)
     
-    X_tr_lat_xgb, y_tr_xgb = xgb_extract_features(xgb_model, train_ds, cfg, level=level)
-    X_va_lat_xgb, y_va_xgb = xgb_extract_features(xgb_model, val_ds,   cfg, level=level)
-    X_tr_all_xgb = np.concatenate([X_tr_lat_xgb, X_va_lat_xgb])
-    y_tr_all_xgb = np.concatenate([y_tr_xgb,    y_va_xgb])
-    del X_tr_lat_xgb, X_va_lat_xgb, y_tr_xgb, y_va_xgb; gc.collect()
-    X_te_lat_xgb, y_te_xgb = xgb_extract_features(xgb_model, test_ds,  cfg, level=level)
+        X_tr_lat_xgb, y_tr_xgb = xgb_extract_features(xgb_model, train_ds, cfg, level=level)
+        X_va_lat_xgb, y_va_xgb = xgb_extract_features(xgb_model, val_ds,   cfg, level=level)
+        X_tr_all_xgb = np.concatenate([X_tr_lat_xgb, X_va_lat_xgb])
+        y_tr_all_xgb = np.concatenate([y_tr_xgb,    y_va_xgb])
+        del X_tr_lat_xgb, X_va_lat_xgb, y_tr_xgb, y_va_xgb; gc.collect()
+        X_te_lat_xgb, y_te_xgb = xgb_extract_features(xgb_model, test_ds,  cfg, level=level)
 
-    X_tr_raw_xgb, y_tr_raw_xgb = xgb_extract_raw(train_ds, cfg, level=level)
-    X_va_raw_xgb, y_va_raw_xgb = xgb_extract_raw(val_ds,   cfg, level=level)
-    X_tr_raw_all_xgb = np.concatenate([X_tr_raw_xgb, X_va_raw_xgb])
-    y_tr_raw_all_xgb = np.concatenate([y_tr_raw_xgb, y_va_raw_xgb])
-    del X_tr_raw_xgb, X_va_raw_xgb, y_tr_raw_xgb, y_va_raw_xgb; gc.collect()
-    X_te_raw_xgb, y_te_raw_xgb = xgb_extract_raw(test_ds,  cfg, level=level)
+        X_tr_raw_xgb, y_tr_raw_xgb = xgb_extract_raw(train_ds, cfg, level=level)
+        X_va_raw_xgb, y_va_raw_xgb = xgb_extract_raw(val_ds,   cfg, level=level)
+        X_tr_raw_all_xgb = np.concatenate([X_tr_raw_xgb, X_va_raw_xgb])
+        y_tr_raw_all_xgb = np.concatenate([y_tr_raw_xgb, y_va_raw_xgb])
+        del X_tr_raw_xgb, X_va_raw_xgb, y_tr_raw_xgb, y_va_raw_xgb; gc.collect()
+        X_te_raw_xgb, y_te_raw_xgb = xgb_extract_raw(test_ds,  cfg, level=level)
     
-    if "xgb_params" not in cfg:
-        cfg["xgb_params"] = {
-            "n_estimators": 500,
-            "max_depth": 6,
-            "learning_rate": 0.05,
-            "subsample": 0.8,
-            "colsample_bytree": 0.8,
-            "use_label_encoder": False,
-            "eval_metric": ["logloss", "auc", "aucpr"], 
-            "device": "cuda",             
-            "random_state": 42,
-        }
+        if "xgb_params" not in cfg:
+            cfg["xgb_params"] = {
+                "n_estimators": 500,
+                "max_depth": 6,
+                "learning_rate": 0.05,
+                "subsample": 0.8,
+                "colsample_bytree": 0.8,
+                "use_label_encoder": False,
+                "eval_metric": ["logloss", "auc", "aucpr"], 
+                "device": "cuda",             
+                "random_state": 42,
+            }
 
-    xgb_lat = fit_xgb(X_tr_all_xgb, y_tr_all_xgb, cfg)
-    del X_tr_all_xgb, y_tr_all_xgb; gc.collect()
+        xgb_lat = fit_xgb(X_tr_all_xgb, y_tr_all_xgb, cfg)
+        del X_tr_all_xgb, y_tr_all_xgb; gc.collect()
 
-    xgb_raw = fit_xgb(X_tr_raw_all_xgb, y_tr_raw_all_xgb, cfg)
-    del X_tr_raw_all_xgb, y_tr_raw_all_xgb; gc.collect()
+        xgb_raw = fit_xgb(X_tr_raw_all_xgb, y_tr_raw_all_xgb, cfg)
+        del X_tr_raw_all_xgb, y_tr_raw_all_xgb; gc.collect()
 
-    res["XGBoost on latent"] = xgb_evaluate_classifier(xgb_lat, X_te_lat_xgb, y_te_xgb, "XGB Latent", device=device)
-    del X_te_lat_xgb; gc.collect()
+        res["XGBoost on latent"] = xgb_evaluate_classifier(xgb_lat, X_te_lat_xgb, y_te_xgb, "XGB Latent", device=device)
+        del X_te_lat_xgb; gc.collect()
 
-    res["XGBoost on raw (baseline)"] = xgb_evaluate_classifier(xgb_raw, X_te_raw_xgb, y_te_raw_xgb, "XGB Raw", device=device)
-    del X_te_raw_xgb; gc.collect()
+        res["XGBoost on raw (baseline)"] = xgb_evaluate_classifier(xgb_raw, X_te_raw_xgb, y_te_raw_xgb, "XGB Raw", device=device)
+        del X_te_raw_xgb; gc.collect()
 
-    res["XGBoost on latent"]["y_test"] = y_te_xgb
-    res["XGBoost on raw (baseline)"]["y_test"] = y_te_raw_xgb
+        res["XGBoost on latent"]["y_test"] = y_te_xgb
+        res["XGBoost on raw (baseline)"]["y_test"] = y_te_raw_xgb
 
-    plot_predictions(test_ds, res["XGBoost on latent"]["y_pred"], res["XGBoost on latent"]["cm"], str(test_pred_dir / f"{ckpt_name}_xgb_latent.png"), "orange", "XGBoost Latent Predictions")
-    plot_predictions(test_ds, res["XGBoost on raw (baseline)"]["y_pred"], res["XGBoost on raw (baseline)"]["cm"], str(test_pred_dir / f"{ckpt_name}_xgb_raw.png"), "brown", "XGBoost Raw Predictions")
+        plot_predictions(test_ds, res["XGBoost on latent"]["y_pred"], res["XGBoost on latent"]["cm"], str(test_pred_dir / f"{ckpt_name}_xgb_latent.png"), "orange", "XGBoost Latent Predictions")
+        plot_predictions(test_ds, res["XGBoost on raw (baseline)"]["y_pred"], res["XGBoost on raw (baseline)"]["cm"], str(test_pred_dir / f"{ckpt_name}_xgb_raw.png"), "brown", "XGBoost Raw Predictions")
 
-    # Save checkpoints
-    with open(chkpts_dir / f"{ckpt_name}_xgb_latent.pkl", "wb") as f:
-        pickle.dump(xgb_lat, f)
-    with open(chkpts_dir / f"{ckpt_name}_xgb_raw.pkl", "wb") as f:
-        pickle.dump(xgb_raw, f)
+        # Save checkpoints
+        with open(chkpts_dir / f"{ckpt_name}_xgb_latent.pkl", "wb") as f:
+            pickle.dump(xgb_lat, f)
+        with open(chkpts_dir / f"{ckpt_name}_xgb_raw.pkl", "wb") as f:
+            pickle.dump(xgb_raw, f)
 
-    # Plot ROC and PRC
-    plot_roc_prc(y_te_xgb.flatten(), res["XGBoost on latent"]["y_prob"], 
-                 str(roc_prc_dir / f"{ckpt_name}_xgb_latent_roc.png"), 
-                 str(roc_prc_dir / f"{ckpt_name}_xgb_latent_prc.png"), "XGBoost Latent")
-    plot_roc_prc(y_te_raw_xgb.flatten(), res["XGBoost on raw (baseline)"]["y_prob"], 
-                 str(roc_prc_dir / f"{ckpt_name}_xgb_raw_roc.png"), 
-                 str(roc_prc_dir / f"{ckpt_name}_xgb_raw_prc.png"), "XGBoost Raw")
+        # Plot ROC and PRC
+        plot_roc_prc(y_te_xgb.flatten(), res["XGBoost on latent"]["y_prob"], 
+                     str(roc_prc_dir / f"{ckpt_name}_xgb_latent_roc.png"), 
+                     str(roc_prc_dir / f"{ckpt_name}_xgb_latent_prc.png"), "XGBoost Latent")
+        plot_roc_prc(y_te_raw_xgb.flatten(), res["XGBoost on raw (baseline)"]["y_prob"], 
+                     str(roc_prc_dir / f"{ckpt_name}_xgb_raw_roc.png"), 
+                     str(roc_prc_dir / f"{ckpt_name}_xgb_raw_prc.png"), "XGBoost Raw")
 
-    # 1-year slice plots
-    X_1yr_lat_xgb, _ = xgb_extract_features(xgb_model, ds_1yr, cfg, level=level)
-    X_1yr_raw_xgb, _ = xgb_extract_raw(ds_1yr, cfg, level=level)
+        # 1-year slice plots
+        X_1yr_lat_xgb, _ = xgb_extract_features(xgb_model, ds_1yr, cfg, level=level)
+        X_1yr_raw_xgb, _ = xgb_extract_raw(ds_1yr, cfg, level=level)
     
-    if "cuda" in str(xgb_lat.get_params().get("device", "")) or "cuda" in str(device):
-        X_1yr_lat_xgb_dev = torch.as_tensor(X_1yr_lat_xgb, device=device, dtype=torch.float32)
-        X_1yr_raw_xgb_dev = torch.as_tensor(X_1yr_raw_xgb, device=device, dtype=torch.float32)
-    else:
-        X_1yr_lat_xgb_dev = X_1yr_lat_xgb
-        X_1yr_raw_xgb_dev = X_1yr_raw_xgb
+        if "cuda" in str(xgb_lat.get_params().get("device", "")) or "cuda" in str(device):
+            X_1yr_lat_xgb_dev = torch.as_tensor(X_1yr_lat_xgb, device=device, dtype=torch.float32)
+            X_1yr_raw_xgb_dev = torch.as_tensor(X_1yr_raw_xgb, device=device, dtype=torch.float32)
+        else:
+            X_1yr_lat_xgb_dev = X_1yr_lat_xgb
+            X_1yr_raw_xgb_dev = X_1yr_raw_xgb
 
-    prob_lat_1yr_xgb = xgb_lat.predict_proba(X_1yr_lat_xgb_dev)[:, 1]
-    prob_raw_1yr_xgb = xgb_raw.predict_proba(X_1yr_raw_xgb_dev)[:, 1]
+        prob_lat_1yr_xgb = xgb_lat.predict_proba(X_1yr_lat_xgb_dev)[:, 1]
+        prob_raw_1yr_xgb = xgb_raw.predict_proba(X_1yr_raw_xgb_dev)[:, 1]
     
-    del X_1yr_lat_xgb_dev, X_1yr_raw_xgb_dev
-    try: del X_1yr_lat_xgb, X_1yr_raw_xgb
-    except: pass
-    gc.collect()
+        del X_1yr_lat_xgb_dev, X_1yr_raw_xgb_dev
+        try: del X_1yr_lat_xgb, X_1yr_raw_xgb
+        except: pass
+        gc.collect()
     
-    if hasattr(prob_lat_1yr_xgb, "cpu"): prob_lat_1yr_xgb = prob_lat_1yr_xgb.cpu().numpy()
-    if hasattr(prob_raw_1yr_xgb, "cpu"): prob_raw_1yr_xgb = prob_raw_1yr_xgb.cpu().numpy()
+        if hasattr(prob_lat_1yr_xgb, "cpu"): prob_lat_1yr_xgb = prob_lat_1yr_xgb.cpu().numpy()
+        if hasattr(prob_raw_1yr_xgb, "cpu"): prob_raw_1yr_xgb = prob_raw_1yr_xgb.cpu().numpy()
 
-    plot_1year_slice(ds_1yr, prob_lat_1yr_xgb, str(slice_dir / f"{ckpt_name}_xgb_latent_1year.png"), "XGBoost Latent", color="orange")
-    plot_1year_slice(ds_1yr, prob_raw_1yr_xgb, str(slice_dir / f"{ckpt_name}_xgb_raw_1year.png"), "XGBoost Raw", color="brown")
-
-    del xgb_model, xgb_lat, xgb_raw; gc.collect()
+            plot_1year_slice(ds_1yr, prob_lat_1yr_xgb, str(slice_dir / f"{ckpt_name}_xgb_latent_1year.png"), "XGBoost Latent", color="orange")
+            plot_1year_slice(ds_1yr, prob_raw_1yr_xgb, str(slice_dir / f"{ckpt_name}_xgb_raw_1year.png"), "XGBoost Raw", color="brown")
     
+            del xgb_model, xgb_lat, xgb_raw; gc.collect()
+        
     return res
 
 def format_tsv(res, out_path, model_type="XGBoost"):
@@ -307,12 +309,21 @@ def format_tsv(res, out_path, model_type="XGBoost"):
     print(f"\nSaved TSV to {out_path}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run both evaluators and output required TSV and images")
+    parser = argparse.ArgumentParser(description="Run evaluators and output required TSV and images")
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to checkpoint")
+    parser.add_argument("--cnn", action="store_true", help="Run CNN evaluation")
+    parser.add_argument("--xgb", action="store_true", help="Run XGBoost evaluation")
     args = parser.parse_args()
     
-    ckpt_path = Path(args.checkpoint)
-    res = run_evaluation(ckpt_path)
+    if not args.cnn and not args.xgb:
+        import sys
+        print("Error: You must specify at least one model to evaluate by including the --cnn and/or --xgb flags.")
+        sys.exit(1)
     
-    format_tsv(res, ckpt_path.parent / f"{ckpt_path.stem}_xgb_results.tsv", "XGBoost")
-    format_tsv(res, ckpt_path.parent / f"{ckpt_path.stem}_cnn_results.tsv", "CNN")
+    ckpt_path = Path(args.checkpoint)
+    res = run_evaluation(ckpt_path, run_cnn=args.cnn, run_xgb=args.xgb)
+    
+    if args.xgb:
+        format_tsv(res, ckpt_path.parent / f"{ckpt_path.stem}_xgb_results.tsv", "XGBoost")
+    if args.cnn:
+        format_tsv(res, ckpt_path.parent / f"{ckpt_path.stem}_cnn_results.tsv", "CNN")
