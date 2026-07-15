@@ -69,14 +69,14 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
 
     # Create slice dataset based on start and end dates
     print(f"Creating {logitplot_start_date} to {logitplot_end_date} slice dataset...")
-    omni_df_1yr = omni_df.loc[logitplot_start_date:logitplot_end_date].copy()
-    omni_df_1yr.interpolate(limit=6, limit_direction="both", inplace=True)
-    omni_df_1yr.fillna(0.0, inplace=True)
-    data_1yr = scaler.transform(omni_df_1yr[feature_cols].values).astype(np.float32)
-    icme_intervals_1yr = build_icme_intervals(cr_icmes)
-    ds_1yr = OmniPatchDataset(
-        data_1yr, omni_df_1yr.index,
-        icme_intervals=icme_intervals_1yr,
+    omni_dflogits = omni_df.loc[logitplot_start_date:logitplot_end_date].copy()
+    omni_dflogits.interpolate(limit=6, limit_direction="both", inplace=True)
+    omni_dflogits.fillna(0.0, inplace=True)
+    datalogits = scaler.transform(omni_dflogits[feature_cols].values).astype(np.float32)
+    icme_intervalslogits = build_icme_intervals(cr_icmes)
+    dslogits = OmniPatchDataset(
+        datalogits, omni_dflogits.index,
+        icme_intervals=icme_intervalslogits,
         context_length=cfg["context_length"],
         prediction_length=cfg["prediction_length"],
         patch_length=cfg["patch_length"],
@@ -148,22 +148,22 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
                      str(roc_prc_dir / f"{ckpt_name}_cnn_raw_prc.png"), "CNN Raw")
 
         # 1-year slice plots
-        X_1yr_lat_cnn, _ = cnn_extract_features(cnn_model, ds_1yr, cfg, level=level, flatten=False)
-        X_1yr_raw_cnn, _ = cnn_extract_raw(ds_1yr, cfg, level=level)
+        Xlogits_lat_cnn, _ = cnn_extract_features(cnn_model, dslogits, cfg, level=level, flatten=False)
+        Xlogits_raw_cnn, _ = cnn_extract_raw(dslogits, cfg, level=level)
     
         cnn_lat.eval()
         cnn_raw.eval()
         with torch.no_grad():
-            logits_lat = cnn_lat(torch.tensor(X_1yr_lat_cnn, dtype=torch.float32, device=device))
-            prob_lat_1yr = torch.sigmoid(logits_lat).cpu().numpy().flatten()
+            logits_lat = cnn_lat(torch.tensor(Xlogits_lat_cnn, dtype=torch.float32, device=device))
+            prob_latlogits = torch.sigmoid(logits_lat).cpu().numpy().flatten()
         
-            logits_raw = cnn_raw(torch.tensor(X_1yr_raw_cnn, dtype=torch.float32, device=device))
-            prob_raw_1yr = torch.sigmoid(logits_raw).cpu().numpy().flatten()
+            logits_raw = cnn_raw(torch.tensor(Xlogits_raw_cnn, dtype=torch.float32, device=device))
+            prob_rawlogits = torch.sigmoid(logits_raw).cpu().numpy().flatten()
     
-        del X_1yr_lat_cnn, X_1yr_raw_cnn; gc.collect()
+        del Xlogits_lat_cnn, Xlogits_raw_cnn; gc.collect()
         
-        plot_logit_slice(ds_1yr, prob_lat_1yr, str(slice_dir / f"{ckpt_name}_cnn_latent_logit.png"), "CNN Latent", color="purple", logitplot_start_date=logitplot_start_date, logitplot_end_date=logitplot_end_date)
-        plot_logit_slice(ds_1yr, prob_raw_1yr, str(slice_dir / f"{ckpt_name}_cnn_raw_logit.png"), "CNN Raw", color="darkgoldenrod", logitplot_start_date=logitplot_start_date, logitplot_end_date=logitplot_end_date)
+        plot_logit_slice(dslogits, prob_latlogits, str(slice_dir / f"{ckpt_name}_cnn_latent_logit.png"), "CNN Latent", color="purple", logitplot_start_date=logitplot_start_date, logitplot_end_date=logitplot_end_date)
+        plot_logit_slice(dslogits, prob_rawlogits, str(slice_dir / f"{ckpt_name}_cnn_raw_logit.png"), "CNN Raw", color="darkgoldenrod", logitplot_start_date=logitplot_start_date, logitplot_end_date=logitplot_end_date)
     
         del cnn_model, cnn_lat, cnn_raw; gc.collect()
 
@@ -239,29 +239,29 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
                      str(roc_prc_dir / f"{ckpt_name}_xgb_raw_prc.png"), "XGBoost Raw")
 
         # 1-year slice plots
-        X_1yr_lat_xgb, _ = xgb_extract_features(xgb_model, ds_1yr, cfg, level=level)
-        X_1yr_raw_xgb, _ = xgb_extract_raw(ds_1yr, cfg, level=level)
+        Xlogits_lat_xgb, _ = xgb_extract_features(xgb_model, dslogits, cfg, level=level)
+        Xlogits_raw_xgb, _ = xgb_extract_raw(dslogits, cfg, level=level)
     
         if "cuda" in str(xgb_lat.get_params().get("device", "")) or "cuda" in str(device):
-            X_1yr_lat_xgb_dev = torch.as_tensor(X_1yr_lat_xgb, device=device, dtype=torch.float32)
-            X_1yr_raw_xgb_dev = torch.as_tensor(X_1yr_raw_xgb, device=device, dtype=torch.float32)
+            Xlogits_lat_xgb_dev = torch.as_tensor(Xlogits_lat_xgb, device=device, dtype=torch.float32)
+            Xlogits_raw_xgb_dev = torch.as_tensor(Xlogits_raw_xgb, device=device, dtype=torch.float32)
         else:
-            X_1yr_lat_xgb_dev = X_1yr_lat_xgb
-            X_1yr_raw_xgb_dev = X_1yr_raw_xgb
+            Xlogits_lat_xgb_dev = Xlogits_lat_xgb
+            Xlogits_raw_xgb_dev = Xlogits_raw_xgb
 
-        prob_lat_1yr_xgb = xgb_lat.predict_proba(X_1yr_lat_xgb_dev)[:, 1]
-        prob_raw_1yr_xgb = xgb_raw.predict_proba(X_1yr_raw_xgb_dev)[:, 1]
+        prob_latlogits_xgb = xgb_lat.predict_proba(Xlogits_lat_xgb_dev)[:, 1]
+        prob_rawlogits_xgb = xgb_raw.predict_proba(Xlogits_raw_xgb_dev)[:, 1]
     
-        del X_1yr_lat_xgb_dev, X_1yr_raw_xgb_dev
-        try: del X_1yr_lat_xgb, X_1yr_raw_xgb
+        del Xlogits_lat_xgb_dev, Xlogits_raw_xgb_dev
+        try: del Xlogits_lat_xgb, Xlogits_raw_xgb
         except: pass
         gc.collect()
     
-        if hasattr(prob_lat_1yr_xgb, "cpu"): prob_lat_1yr_xgb = prob_lat_1yr_xgb.cpu().numpy()
-        if hasattr(prob_raw_1yr_xgb, "cpu"): prob_raw_1yr_xgb = prob_raw_1yr_xgb.cpu().numpy()
+        if hasattr(prob_latlogits_xgb, "cpu"): prob_latlogits_xgb = prob_latlogits_xgb.cpu().numpy()
+        if hasattr(prob_rawlogits_xgb, "cpu"): prob_rawlogits_xgb = prob_rawlogits_xgb.cpu().numpy()
 
-        plot_logit_slice(ds_1yr, prob_lat_1yr_xgb, str(slice_dir / f"{ckpt_name}_xgb_latent_logit.png"), "XGBoost Latent", color="purple", logitplot_start_date=logitplot_start_date, logitplot_end_date=logitplot_end_date)
-        plot_logit_slice(ds_1yr, prob_raw_1yr_xgb, str(slice_dir / f"{ckpt_name}_xgb_raw_logit.png"), "XGBoost Raw", color="darkgoldenrod", logitplot_start_date=logitplot_start_date, logitplot_end_date=logitplot_end_date)
+        plot_logit_slice(dslogits, prob_latlogits_xgb, str(slice_dir / f"{ckpt_name}_xgb_latent_logit.png"), "XGBoost Latent", color="purple", logitplot_start_date=logitplot_start_date, logitplot_end_date=logitplot_end_date)
+        plot_logit_slice(dslogits, prob_rawlogits_xgb, str(slice_dir / f"{ckpt_name}_xgb_raw_logit.png"), "XGBoost Raw", color="darkgoldenrod", logitplot_start_date=logitplot_start_date, logitplot_end_date=logitplot_end_date)
     
         del xgb_model, xgb_lat, xgb_raw; gc.collect()
         
