@@ -106,10 +106,16 @@ def run_evaluation(checkpoint_path: Path):
     X_te_raw_cnn, y_te_raw_cnn = cnn_extract_raw(test_ds,  cfg, level=level)
 
     cnn_lat = fit_cnn(X_tr_all_cnn, y_tr_all_cnn, cfg, level=level, is_latent=True)
+    del X_tr_all_cnn, y_tr_all_cnn; gc.collect()
+
     cnn_raw = fit_cnn(X_tr_raw_all_cnn, y_tr_raw_all_cnn, cfg, level=level, is_latent=False)
+    del X_tr_raw_all_cnn, y_tr_raw_all_cnn; gc.collect()
 
     res["CNN on latent"] = cnn_evaluate_classifier(cnn_lat, X_te_lat_cnn, y_te_cnn, "CNN Latent", device=device)
+    del X_te_lat_cnn; gc.collect()
+
     res["CNN on raw (baseline)"] = cnn_evaluate_classifier(cnn_raw, X_te_raw_cnn, y_te_raw_cnn, "CNN Raw", device=device)
+    del X_te_raw_cnn; gc.collect()
     
     res["CNN on latent"]["y_test"] = y_te_cnn
     res["CNN on raw (baseline)"]["y_test"] = y_te_raw_cnn
@@ -141,6 +147,8 @@ def run_evaluation(checkpoint_path: Path):
         
         logits_raw = cnn_raw(torch.tensor(X_2018_raw_cnn, dtype=torch.float32, device=device))
         prob_raw_2018 = torch.sigmoid(logits_raw).cpu().numpy().flatten()
+    
+    del X_2018_lat_cnn, X_2018_raw_cnn; gc.collect()
         
     plot_1year_slice(ds_2018, prob_lat_2018, str(slice_dir / f"{ckpt_name}_cnn_latent_1year.png"), "CNN Latent", color="orange")
     plot_1year_slice(ds_2018, prob_raw_2018, str(slice_dir / f"{ckpt_name}_cnn_raw_1year.png"), "CNN Raw", color="brown")
@@ -179,10 +187,16 @@ def run_evaluation(checkpoint_path: Path):
         }
 
     xgb_lat = fit_xgb(X_tr_all_xgb, y_tr_all_xgb, cfg)
+    del X_tr_all_xgb, y_tr_all_xgb; gc.collect()
+
     xgb_raw = fit_xgb(X_tr_raw_all_xgb, y_tr_raw_all_xgb, cfg)
+    del X_tr_raw_all_xgb, y_tr_raw_all_xgb; gc.collect()
 
     res["XGBoost on latent"] = xgb_evaluate_classifier(xgb_lat, X_te_lat_xgb, y_te_xgb, "XGB Latent", device=device)
+    del X_te_lat_xgb; gc.collect()
+
     res["XGBoost on raw (baseline)"] = xgb_evaluate_classifier(xgb_raw, X_te_raw_xgb, y_te_raw_xgb, "XGB Raw", device=device)
+    del X_te_raw_xgb; gc.collect()
 
     res["XGBoost on latent"]["y_test"] = y_te_xgb
     res["XGBoost on raw (baseline)"]["y_test"] = y_te_raw_xgb
@@ -217,6 +231,11 @@ def run_evaluation(checkpoint_path: Path):
 
     prob_lat_2018_xgb = xgb_lat.predict_proba(X_2018_lat_xgb_dev)[:, 1]
     prob_raw_2018_xgb = xgb_raw.predict_proba(X_2018_raw_xgb_dev)[:, 1]
+    
+    del X_2018_lat_xgb_dev, X_2018_raw_xgb_dev
+    try: del X_2018_lat_xgb, X_2018_raw_xgb
+    except: pass
+    gc.collect()
     
     if hasattr(prob_lat_2018_xgb, "cpu"): prob_lat_2018_xgb = prob_lat_2018_xgb.cpu().numpy()
     if hasattr(prob_raw_2018_xgb, "cpu"): prob_raw_2018_xgb = prob_raw_2018_xgb.cpu().numpy()
