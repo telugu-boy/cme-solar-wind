@@ -137,7 +137,7 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
         res["CNN on raw (baseline)"]["y_test"] = y_te_raw_cnn
 
         plot_predictions(test_ds, res["CNN on latent"]["y_pred"], res["CNN on latent"]["cm"], str(test_pred_dir / f"{ckpt_name}_cnn_latent.png"), "purple", "CNN Latent Predictions")
-        plot_predictions(test_ds, res["CNN on raw (baseline)"]["y_pred"], res["CNN on raw (baseline)"]["cm"], str(test_pred_dir / f"{ckpt_name}_cnn_raw.png"), "goldenrod", "CNN Raw Predictions")
+        plot_predictions(test_ds, res["CNN on raw (baseline)"]["y_pred"], res["CNN on raw (baseline)"]["cm"], str(test_pred_dir / f"{ckpt_name}_cnn_raw.png"), "darkgoldenrod", "CNN Raw Predictions")
 
         # Plot ROC and PRC
         plot_roc_prc(y_te_cnn.flatten(), res["CNN on latent"]["y_prob"], 
@@ -163,7 +163,7 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
         del X_1yr_lat_cnn, X_1yr_raw_cnn; gc.collect()
         
         plot_1year_slice(ds_1yr, prob_lat_1yr, str(slice_dir / f"{ckpt_name}_cnn_latent_1year.png"), "CNN Latent", color="purple")
-        plot_1year_slice(ds_1yr, prob_raw_1yr, str(slice_dir / f"{ckpt_name}_cnn_raw_1year.png"), "CNN Raw", color="goldenrod")
+        plot_1year_slice(ds_1yr, prob_raw_1yr, str(slice_dir / f"{ckpt_name}_cnn_raw_1year.png"), "CNN Raw", color="darkgoldenrod")
     
         del cnn_model, cnn_lat, cnn_raw; gc.collect()
 
@@ -228,7 +228,7 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
         res["XGBoost on raw (baseline)"]["y_test"] = y_te_raw_xgb
 
         plot_predictions(test_ds, res["XGBoost on latent"]["y_pred"], res["XGBoost on latent"]["cm"], str(test_pred_dir / f"{ckpt_name}_xgb_latent.png"), "purple", "XGBoost Latent Predictions")
-        plot_predictions(test_ds, res["XGBoost on raw (baseline)"]["y_pred"], res["XGBoost on raw (baseline)"]["cm"], str(test_pred_dir / f"{ckpt_name}_xgb_raw.png"), "goldenrod", "XGBoost Raw Predictions")
+        plot_predictions(test_ds, res["XGBoost on raw (baseline)"]["y_pred"], res["XGBoost on raw (baseline)"]["cm"], str(test_pred_dir / f"{ckpt_name}_xgb_raw.png"), "darkgoldenrod", "XGBoost Raw Predictions")
 
         # Plot ROC and PRC
         plot_roc_prc(y_te_xgb.flatten(), res["XGBoost on latent"]["y_prob"], 
@@ -261,7 +261,7 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
         if hasattr(prob_raw_1yr_xgb, "cpu"): prob_raw_1yr_xgb = prob_raw_1yr_xgb.cpu().numpy()
 
         plot_1year_slice(ds_1yr, prob_lat_1yr_xgb, str(slice_dir / f"{ckpt_name}_xgb_latent_1year.png"), "XGBoost Latent", color="purple")
-        plot_1year_slice(ds_1yr, prob_raw_1yr_xgb, str(slice_dir / f"{ckpt_name}_xgb_raw_1year.png"), "XGBoost Raw", color="goldenrod")
+        plot_1year_slice(ds_1yr, prob_raw_1yr_xgb, str(slice_dir / f"{ckpt_name}_xgb_raw_1year.png"), "XGBoost Raw", color="darkgoldenrod")
     
         del xgb_model, xgb_lat, xgb_raw; gc.collect()
         
