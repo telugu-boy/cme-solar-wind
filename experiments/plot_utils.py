@@ -71,7 +71,7 @@ def plot_1year_slice(dataset, y_prob, out_path, title, color="orange"):
     ax2.fill_between(dataset.times, 0, 1, where=(gt > 0.5), 
                     color='black', alpha=0.15, step='pre', label='Ground Truth ICME')
     
-    ax.set_title(f"{title} - 1 Year Slice (2018)")
+    ax.set_title(f"{title} - 1 Year Slice (July 2015 - July 2016)")
     ax.set_xlabel("Time")
     ax.set_ylabel("Normalized Features (B-field)")
     ax2.set_ylabel("Probability (0 to 1)")
