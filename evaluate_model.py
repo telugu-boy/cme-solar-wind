@@ -16,6 +16,7 @@ import shutil
 import tempfile
 
 from experiments.cnn_evaluator import (
+    DownstreamCNN,
     extract_features as cnn_extract_features,
     extract_raw_features as cnn_extract_raw,
     fit_cnn,
@@ -31,7 +32,7 @@ from experiments.xgboost_evaluator import (
     build_backbone_from_config as xgb_build_backbone
 )
 
-def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = True):
+def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = True, use_existing_checkpoints: bool = False):
     out_dir = checkpoint_path.parent
     
     chkpts_dir = out_dir / "checkpoints"
@@ -93,26 +94,38 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
     if run_cnn:
         print("\n=== Running CNN Evaluation ===")
         cnn_model = cnn_build_backbone(cfg, state_dict).to(device)
-    
-        X_tr_lat_cnn, y_tr_cnn = cnn_extract_features(cnn_model, train_ds, cfg, level=level, flatten=False)
-        X_va_lat_cnn, y_va_cnn = cnn_extract_features(cnn_model, val_ds,   cfg, level=level, flatten=False)
-        X_tr_all_cnn = np.concatenate([X_tr_lat_cnn, X_va_lat_cnn])
-        y_tr_all_cnn = np.concatenate([y_tr_cnn,    y_va_cnn])
-        del X_tr_lat_cnn, X_va_lat_cnn, y_tr_cnn, y_va_cnn; gc.collect()
+        
         X_te_lat_cnn, y_te_cnn = cnn_extract_features(cnn_model, test_ds,  cfg, level=level, flatten=False)
-
-        X_tr_raw_cnn, y_tr_raw_cnn = cnn_extract_raw(train_ds, cfg, level=level)
-        X_va_raw_cnn, y_va_raw_cnn = cnn_extract_raw(val_ds,   cfg, level=level)
-        X_tr_raw_all_cnn = np.concatenate([X_tr_raw_cnn, X_va_raw_cnn])
-        y_tr_raw_all_cnn = np.concatenate([y_tr_raw_cnn, y_va_raw_cnn])
-        del X_tr_raw_cnn, X_va_raw_cnn, y_tr_raw_cnn, y_va_raw_cnn; gc.collect()
         X_te_raw_cnn, y_te_raw_cnn = cnn_extract_raw(test_ds,  cfg, level=level)
+    
+        if not use_existing_checkpoints:
+            X_tr_lat_cnn, y_tr_cnn = cnn_extract_features(cnn_model, train_ds, cfg, level=level, flatten=False)
+            X_va_lat_cnn, y_va_cnn = cnn_extract_features(cnn_model, val_ds,   cfg, level=level, flatten=False)
+            X_tr_all_cnn = np.concatenate([X_tr_lat_cnn, X_va_lat_cnn])
+            y_tr_all_cnn = np.concatenate([y_tr_cnn,    y_va_cnn])
+            del X_tr_lat_cnn, X_va_lat_cnn, y_tr_cnn, y_va_cnn; gc.collect()
 
-        cnn_lat = fit_cnn(X_tr_all_cnn, y_tr_all_cnn, cfg, level=level, is_latent=True)
-        del X_tr_all_cnn, y_tr_all_cnn; gc.collect()
+            X_tr_raw_cnn, y_tr_raw_cnn = cnn_extract_raw(train_ds, cfg, level=level)
+            X_va_raw_cnn, y_va_raw_cnn = cnn_extract_raw(val_ds,   cfg, level=level)
+            X_tr_raw_all_cnn = np.concatenate([X_tr_raw_cnn, X_va_raw_cnn])
+            y_tr_raw_all_cnn = np.concatenate([y_tr_raw_cnn, y_va_raw_cnn])
+            del X_tr_raw_cnn, X_va_raw_cnn, y_tr_raw_cnn, y_va_raw_cnn; gc.collect()
 
-        cnn_raw = fit_cnn(X_tr_raw_all_cnn, y_tr_raw_all_cnn, cfg, level=level, is_latent=False)
-        del X_tr_raw_all_cnn, y_tr_raw_all_cnn; gc.collect()
+            cnn_lat = fit_cnn(X_tr_all_cnn, y_tr_all_cnn, cfg, level=level, is_latent=True)
+            del X_tr_all_cnn, y_tr_all_cnn; gc.collect()
+
+            cnn_raw = fit_cnn(X_tr_raw_all_cnn, y_tr_raw_all_cnn, cfg, level=level, is_latent=False)
+            del X_tr_raw_all_cnn, y_tr_raw_all_cnn; gc.collect()
+            
+            # Save checkpoints
+            torch.save(cnn_lat.state_dict(), chkpts_dir / f"{ckpt_name}_cnn_latent.pt")
+            torch.save(cnn_raw.state_dict(), chkpts_dir / f"{ckpt_name}_cnn_raw.pt")
+        else:
+            n_feat = cfg.get("_n_features", len(feature_cols))
+            cnn_lat = DownstreamCNN(in_features=80, is_latent=True, level=level, C=n_feat, D=cfg.get("d_model", 64)).to(device)
+            cnn_lat.load_state_dict(torch.load(chkpts_dir / f"{ckpt_name}_cnn_latent.pt", map_location=device, weights_only=True))
+            cnn_raw = DownstreamCNN(in_features=cfg["patch_length"] * n_feat, is_latent=False, level=level, C=n_feat, D=cfg.get("d_model", 64)).to(device)
+            cnn_raw.load_state_dict(torch.load(chkpts_dir / f"{ckpt_name}_cnn_raw.pt", map_location=device, weights_only=True))
 
         res["CNN on latent"] = cnn_evaluate_classifier(cnn_lat, X_te_lat_cnn, y_te_cnn, "CNN Latent", device=device)
         del X_te_lat_cnn; gc.collect()
@@ -125,10 +138,6 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
 
         plot_predictions(test_ds, res["CNN on latent"]["y_pred"], res["CNN on latent"]["cm"], str(test_pred_dir / f"{ckpt_name}_cnn_latent.png"), "orange", "CNN Latent Predictions")
         plot_predictions(test_ds, res["CNN on raw (baseline)"]["y_pred"], res["CNN on raw (baseline)"]["cm"], str(test_pred_dir / f"{ckpt_name}_cnn_raw.png"), "brown", "CNN Raw Predictions")
-
-        # Save checkpoints
-        torch.save(cnn_lat.state_dict(), chkpts_dir / f"{ckpt_name}_cnn_latent.pt")
-        torch.save(cnn_raw.state_dict(), chkpts_dir / f"{ckpt_name}_cnn_raw.pt")
 
         # Plot ROC and PRC
         plot_roc_prc(y_te_cnn.flatten(), res["CNN on latent"]["y_prob"], 
@@ -153,48 +162,61 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
     
         del X_1yr_lat_cnn, X_1yr_raw_cnn; gc.collect()
         
-            plot_1year_slice(ds_1yr, prob_lat_1yr, str(slice_dir / f"{ckpt_name}_cnn_latent_1year.png"), "CNN Latent", color="orange")
-            plot_1year_slice(ds_1yr, prob_raw_1yr, str(slice_dir / f"{ckpt_name}_cnn_raw_1year.png"), "CNN Raw", color="brown")
+        plot_1year_slice(ds_1yr, prob_lat_1yr, str(slice_dir / f"{ckpt_name}_cnn_latent_1year.png"), "CNN Latent", color="orange")
+        plot_1year_slice(ds_1yr, prob_raw_1yr, str(slice_dir / f"{ckpt_name}_cnn_raw_1year.png"), "CNN Raw", color="brown")
     
-            del cnn_model, cnn_lat, cnn_raw; gc.collect()
+        del cnn_model, cnn_lat, cnn_raw; gc.collect()
 
     # ---------------- XGB Evaluation ----------------
     if run_xgb:
         print("\n=== Running XGB Evaluation ===")
         xgb_model = xgb_build_backbone(cfg, state_dict).to(device)
     
-        X_tr_lat_xgb, y_tr_xgb = xgb_extract_features(xgb_model, train_ds, cfg, level=level)
-        X_va_lat_xgb, y_va_xgb = xgb_extract_features(xgb_model, val_ds,   cfg, level=level)
-        X_tr_all_xgb = np.concatenate([X_tr_lat_xgb, X_va_lat_xgb])
-        y_tr_all_xgb = np.concatenate([y_tr_xgb,    y_va_xgb])
-        del X_tr_lat_xgb, X_va_lat_xgb, y_tr_xgb, y_va_xgb; gc.collect()
         X_te_lat_xgb, y_te_xgb = xgb_extract_features(xgb_model, test_ds,  cfg, level=level)
-
-        X_tr_raw_xgb, y_tr_raw_xgb = xgb_extract_raw(train_ds, cfg, level=level)
-        X_va_raw_xgb, y_va_raw_xgb = xgb_extract_raw(val_ds,   cfg, level=level)
-        X_tr_raw_all_xgb = np.concatenate([X_tr_raw_xgb, X_va_raw_xgb])
-        y_tr_raw_all_xgb = np.concatenate([y_tr_raw_xgb, y_va_raw_xgb])
-        del X_tr_raw_xgb, X_va_raw_xgb, y_tr_raw_xgb, y_va_raw_xgb; gc.collect()
         X_te_raw_xgb, y_te_raw_xgb = xgb_extract_raw(test_ds,  cfg, level=level)
     
-        if "xgb_params" not in cfg:
-            cfg["xgb_params"] = {
-                "n_estimators": 500,
-                "max_depth": 6,
-                "learning_rate": 0.05,
-                "subsample": 0.8,
-                "colsample_bytree": 0.8,
-                "use_label_encoder": False,
-                "eval_metric": ["logloss", "auc", "aucpr"], 
-                "device": "cuda",             
-                "random_state": 42,
-            }
+        if not use_existing_checkpoints:
+            X_tr_lat_xgb, y_tr_xgb = xgb_extract_features(xgb_model, train_ds, cfg, level=level)
+            X_va_lat_xgb, y_va_xgb = xgb_extract_features(xgb_model, val_ds,   cfg, level=level)
+            X_tr_all_xgb = np.concatenate([X_tr_lat_xgb, X_va_lat_xgb])
+            y_tr_all_xgb = np.concatenate([y_tr_xgb,    y_va_xgb])
+            del X_tr_lat_xgb, X_va_lat_xgb, y_tr_xgb, y_va_xgb; gc.collect()
 
-        xgb_lat = fit_xgb(X_tr_all_xgb, y_tr_all_xgb, cfg)
-        del X_tr_all_xgb, y_tr_all_xgb; gc.collect()
+            X_tr_raw_xgb, y_tr_raw_xgb = xgb_extract_raw(train_ds, cfg, level=level)
+            X_va_raw_xgb, y_va_raw_xgb = xgb_extract_raw(val_ds,   cfg, level=level)
+            X_tr_raw_all_xgb = np.concatenate([X_tr_raw_xgb, X_va_raw_xgb])
+            y_tr_raw_all_xgb = np.concatenate([y_tr_raw_xgb, y_va_raw_xgb])
+            del X_tr_raw_xgb, X_va_raw_xgb, y_tr_raw_xgb, y_va_raw_xgb; gc.collect()
+        
+            if "xgb_params" not in cfg:
+                cfg["xgb_params"] = {
+                    "n_estimators": 500,
+                    "max_depth": 6,
+                    "learning_rate": 0.05,
+                    "subsample": 0.8,
+                    "colsample_bytree": 0.8,
+                    "use_label_encoder": False,
+                    "eval_metric": ["logloss", "auc", "aucpr"], 
+                    "device": "cuda",             
+                    "random_state": 42,
+                }
 
-        xgb_raw = fit_xgb(X_tr_raw_all_xgb, y_tr_raw_all_xgb, cfg)
-        del X_tr_raw_all_xgb, y_tr_raw_all_xgb; gc.collect()
+            xgb_lat = fit_xgb(X_tr_all_xgb, y_tr_all_xgb, cfg)
+            del X_tr_all_xgb, y_tr_all_xgb; gc.collect()
+
+            xgb_raw = fit_xgb(X_tr_raw_all_xgb, y_tr_raw_all_xgb, cfg)
+            del X_tr_raw_all_xgb, y_tr_raw_all_xgb; gc.collect()
+            
+            # Save checkpoints
+            with open(chkpts_dir / f"{ckpt_name}_xgb_latent.pkl", "wb") as f:
+                pickle.dump(xgb_lat, f)
+            with open(chkpts_dir / f"{ckpt_name}_xgb_raw.pkl", "wb") as f:
+                pickle.dump(xgb_raw, f)
+        else:
+            with open(chkpts_dir / f"{ckpt_name}_xgb_latent.pkl", "rb") as f:
+                xgb_lat = pickle.load(f)
+            with open(chkpts_dir / f"{ckpt_name}_xgb_raw.pkl", "rb") as f:
+                xgb_raw = pickle.load(f)
 
         res["XGBoost on latent"] = xgb_evaluate_classifier(xgb_lat, X_te_lat_xgb, y_te_xgb, "XGB Latent", device=device)
         del X_te_lat_xgb; gc.collect()
@@ -207,12 +229,6 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
 
         plot_predictions(test_ds, res["XGBoost on latent"]["y_pred"], res["XGBoost on latent"]["cm"], str(test_pred_dir / f"{ckpt_name}_xgb_latent.png"), "orange", "XGBoost Latent Predictions")
         plot_predictions(test_ds, res["XGBoost on raw (baseline)"]["y_pred"], res["XGBoost on raw (baseline)"]["cm"], str(test_pred_dir / f"{ckpt_name}_xgb_raw.png"), "brown", "XGBoost Raw Predictions")
-
-        # Save checkpoints
-        with open(chkpts_dir / f"{ckpt_name}_xgb_latent.pkl", "wb") as f:
-            pickle.dump(xgb_lat, f)
-        with open(chkpts_dir / f"{ckpt_name}_xgb_raw.pkl", "wb") as f:
-            pickle.dump(xgb_raw, f)
 
         # Plot ROC and PRC
         plot_roc_prc(y_te_xgb.flatten(), res["XGBoost on latent"]["y_prob"], 
@@ -244,10 +260,10 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
         if hasattr(prob_lat_1yr_xgb, "cpu"): prob_lat_1yr_xgb = prob_lat_1yr_xgb.cpu().numpy()
         if hasattr(prob_raw_1yr_xgb, "cpu"): prob_raw_1yr_xgb = prob_raw_1yr_xgb.cpu().numpy()
 
-            plot_1year_slice(ds_1yr, prob_lat_1yr_xgb, str(slice_dir / f"{ckpt_name}_xgb_latent_1year.png"), "XGBoost Latent", color="orange")
-            plot_1year_slice(ds_1yr, prob_raw_1yr_xgb, str(slice_dir / f"{ckpt_name}_xgb_raw_1year.png"), "XGBoost Raw", color="brown")
+        plot_1year_slice(ds_1yr, prob_lat_1yr_xgb, str(slice_dir / f"{ckpt_name}_xgb_latent_1year.png"), "XGBoost Latent", color="orange")
+        plot_1year_slice(ds_1yr, prob_raw_1yr_xgb, str(slice_dir / f"{ckpt_name}_xgb_raw_1year.png"), "XGBoost Raw", color="brown")
     
-            del xgb_model, xgb_lat, xgb_raw; gc.collect()
+        del xgb_model, xgb_lat, xgb_raw; gc.collect()
         
     return res
 
@@ -315,6 +331,7 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to checkpoint")
     parser.add_argument("--cnn", action="store_true", help="Run CNN evaluation")
     parser.add_argument("--xgb", action="store_true", help="Run XGBoost evaluation")
+    parser.add_argument("--use_existing_checkpoints", action="store_true", help="Load existing checkpoints instead of retraining")
     args = parser.parse_args()
     
     if not args.cnn and not args.xgb:
@@ -323,7 +340,7 @@ if __name__ == "__main__":
         sys.exit(1)
     
     ckpt_path = Path(args.checkpoint)
-    res = run_evaluation(ckpt_path, run_cnn=args.cnn, run_xgb=args.xgb)
+    res = run_evaluation(ckpt_path, run_cnn=args.cnn, run_xgb=args.xgb, use_existing_checkpoints=args.use_existing_checkpoints)
     
     if args.xgb:
         format_tsv(res, ckpt_path.parent / f"{ckpt_path.stem}_xgb_results.tsv", "XGBoost")
