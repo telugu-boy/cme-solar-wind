@@ -10,7 +10,7 @@ from sklearn.metrics import classification_report
 # Import required functions from existing evaluators
 from experiments.loaders import read_omni_cache, get_cr_icme_dataframe, engineer_features, make_datasets, OmniPatchDataset, build_icme_intervals
 from experiments.visualize import plot_predictions
-from experiments.plot_utils import plot_roc_prc, plot_1year_slice
+from experiments.plot_utils import plot_roc_prc, plot_logit_slice
 import pickle
 import shutil
 import tempfile
@@ -39,7 +39,7 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
     chkpts_dir.mkdir(exist_ok=True)
     roc_prc_dir = out_dir / "roc_prc_curves"
     roc_prc_dir.mkdir(exist_ok=True)
-    slice_dir = out_dir / "1_year_slices"
+    slice_dir = out_dir / "logit_plots"
     slice_dir.mkdir(exist_ok=True)
     test_pred_dir = out_dir / "test_predictions"
     test_pred_dir.mkdir(exist_ok=True)
@@ -162,8 +162,8 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
     
         del X_1yr_lat_cnn, X_1yr_raw_cnn; gc.collect()
         
-        plot_1year_slice(ds_1yr, prob_lat_1yr, str(slice_dir / f"{ckpt_name}_cnn_latent_1year.png"), "CNN Latent", color="purple", logitplot_start_date=logitplot_start_date, logitplot_end_date=logitplot_end_date)
-        plot_1year_slice(ds_1yr, prob_raw_1yr, str(slice_dir / f"{ckpt_name}_cnn_raw_1year.png"), "CNN Raw", color="darkgoldenrod")
+        plot_logit_slice(ds_1yr, prob_lat_1yr, str(slice_dir / f"{ckpt_name}_cnn_latent_logit.png"), "CNN Latent", color="purple", logitplot_start_date=logitplot_start_date, logitplot_end_date=logitplot_end_date)
+        plot_logit_slice(ds_1yr, prob_raw_1yr, str(slice_dir / f"{ckpt_name}_cnn_raw_logit.png"), "CNN Raw", color="darkgoldenrod", logitplot_start_date=logitplot_start_date, logitplot_end_date=logitplot_end_date)
     
         del cnn_model, cnn_lat, cnn_raw; gc.collect()
 
@@ -260,8 +260,8 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
         if hasattr(prob_lat_1yr_xgb, "cpu"): prob_lat_1yr_xgb = prob_lat_1yr_xgb.cpu().numpy()
         if hasattr(prob_raw_1yr_xgb, "cpu"): prob_raw_1yr_xgb = prob_raw_1yr_xgb.cpu().numpy()
 
-        plot_1year_slice(ds_1yr, prob_lat_1yr_xgb, str(slice_dir / f"{ckpt_name}_xgb_latent_1year.png"), "XGBoost Latent", color="purple", logitplot_start_date=logitplot_start_date, logitplot_end_date=logitplot_end_date)
-        plot_1year_slice(ds_1yr, prob_raw_1yr_xgb, str(slice_dir / f"{ckpt_name}_xgb_raw_1year.png"), "XGBoost Raw", color="darkgoldenrod")
+        plot_logit_slice(ds_1yr, prob_lat_1yr_xgb, str(slice_dir / f"{ckpt_name}_xgb_latent_logit.png"), "XGBoost Latent", color="purple", logitplot_start_date=logitplot_start_date, logitplot_end_date=logitplot_end_date)
+        plot_logit_slice(ds_1yr, prob_raw_1yr_xgb, str(slice_dir / f"{ckpt_name}_xgb_raw_logit.png"), "XGBoost Raw", color="darkgoldenrod", logitplot_start_date=logitplot_start_date, logitplot_end_date=logitplot_end_date)
     
         del xgb_model, xgb_lat, xgb_raw; gc.collect()
         

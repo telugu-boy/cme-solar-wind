@@ -36,7 +36,7 @@ def plot_roc_prc(y_true, y_prob, out_path_roc, out_path_prc, title):
     fig_prc.savefig(out_path_prc)
     plt.close(fig_prc)
 
-def plot_1year_slice(dataset, y_prob, out_path, title, color="orange", logitplot_start_date="2015-07-01", logitplot_end_date="2016-07-01"):
+def plot_logit_slice(dataset, y_prob, out_path, title, color="orange", logitplot_start_date="2015-07-01", logitplot_end_date="2016-07-01"):
     P = dataset.num_patches
     PS = dataset.patch_stride
     PL = dataset.patch_length
@@ -71,7 +71,7 @@ def plot_1year_slice(dataset, y_prob, out_path, title, color="orange", logitplot
     ax2.fill_between(dataset.times, 0, 1, where=(gt > 0.5), 
                     color='black', alpha=0.15, step='pre', label='Ground Truth ICME')
     
-    ax.set_title(f"{title} - Slice ({logitplot_start_date} to {logitplot_end_date})")
+    ax.set_title(f"{title} - Logit Plot ({logitplot_start_date} to {logitplot_end_date})")
     ax.set_xlabel("Time")
     ax.set_ylabel("Normalized Features (B-field)")
     ax2.set_ylabel("Probability (0 to 1)")
