@@ -12,6 +12,8 @@ from experiments.loaders import read_omni_cache, get_cr_icme_dataframe, engineer
 from experiments.visualize import plot_predictions
 from experiments.plot_utils import plot_roc_prc, plot_1year_slice
 import pickle
+import shutil
+import tempfile
 
 from experiments.cnn_evaluator import (
     extract_features as cnn_extract_features,
@@ -327,3 +329,12 @@ if __name__ == "__main__":
         format_tsv(res, ckpt_path.parent / f"{ckpt_path.stem}_xgb_results.tsv", "XGBoost")
     if args.cnn:
         format_tsv(res, ckpt_path.parent / f"{ckpt_path.stem}_cnn_results.tsv", "CNN")
+
+    # Zip up the directory containing the checkpoint and outputs
+    zip_target = ckpt_path.parent / f"{ckpt_path.parent.name}_results.zip"
+    print(f"\nZipping up results to {zip_target}...")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_zip_base = Path(tmpdir) / "archive"
+        shutil.make_archive(str(tmp_zip_base), 'zip', str(ckpt_path.parent))
+        shutil.move(f"{tmp_zip_base}.zip", str(zip_target))
+    print("Zipping complete!")
