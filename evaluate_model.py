@@ -31,6 +31,16 @@ from experiments.xgboost_evaluator import (
 
 def run_evaluation(checkpoint_path: Path):
     out_dir = checkpoint_path.parent
+    
+    chkpts_dir = out_dir / "checkpoints"
+    chkpts_dir.mkdir(exist_ok=True)
+    roc_prc_dir = out_dir / "roc_prc_curves"
+    roc_prc_dir.mkdir(exist_ok=True)
+    slice_dir = out_dir / "1_year_slices"
+    slice_dir.mkdir(exist_ok=True)
+    test_pred_dir = out_dir / "test_predictions"
+    test_pred_dir.mkdir(exist_ok=True)
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
     print(f"Loading package from {checkpoint_path}")
@@ -104,20 +114,20 @@ def run_evaluation(checkpoint_path: Path):
     res["CNN on latent"]["y_test"] = y_te_cnn
     res["CNN on raw (baseline)"]["y_test"] = y_te_raw_cnn
 
-    plot_predictions(test_ds, res["CNN on latent"]["y_pred"], res["CNN on latent"]["cm"], str(out_dir / f"{ckpt_name}_cnn_latent.png"), "orange", "CNN Latent Predictions")
-    plot_predictions(test_ds, res["CNN on raw (baseline)"]["y_pred"], res["CNN on raw (baseline)"]["cm"], str(out_dir / f"{ckpt_name}_cnn_raw.png"), "brown", "CNN Raw Predictions")
+    plot_predictions(test_ds, res["CNN on latent"]["y_pred"], res["CNN on latent"]["cm"], str(test_pred_dir / f"{ckpt_name}_cnn_latent.png"), "orange", "CNN Latent Predictions")
+    plot_predictions(test_ds, res["CNN on raw (baseline)"]["y_pred"], res["CNN on raw (baseline)"]["cm"], str(test_pred_dir / f"{ckpt_name}_cnn_raw.png"), "brown", "CNN Raw Predictions")
 
     # Save checkpoints
-    torch.save(cnn_lat.state_dict(), out_dir / f"{ckpt_name}_cnn_latent.pt")
-    torch.save(cnn_raw.state_dict(), out_dir / f"{ckpt_name}_cnn_raw.pt")
+    torch.save(cnn_lat.state_dict(), chkpts_dir / f"{ckpt_name}_cnn_latent.pt")
+    torch.save(cnn_raw.state_dict(), chkpts_dir / f"{ckpt_name}_cnn_raw.pt")
 
     # Plot ROC and PRC
     plot_roc_prc(y_te_cnn.flatten(), res["CNN on latent"]["y_prob"], 
-                 str(out_dir / f"{ckpt_name}_cnn_latent_roc.png"), 
-                 str(out_dir / f"{ckpt_name}_cnn_latent_prc.png"), "CNN Latent")
+                 str(roc_prc_dir / f"{ckpt_name}_cnn_latent_roc.png"), 
+                 str(roc_prc_dir / f"{ckpt_name}_cnn_latent_prc.png"), "CNN Latent")
     plot_roc_prc(y_te_raw_cnn.flatten(), res["CNN on raw (baseline)"]["y_prob"], 
-                 str(out_dir / f"{ckpt_name}_cnn_raw_roc.png"), 
-                 str(out_dir / f"{ckpt_name}_cnn_raw_prc.png"), "CNN Raw")
+                 str(roc_prc_dir / f"{ckpt_name}_cnn_raw_roc.png"), 
+                 str(roc_prc_dir / f"{ckpt_name}_cnn_raw_prc.png"), "CNN Raw")
 
     # 1-year slice plots
     X_2018_lat_cnn, _ = cnn_extract_features(cnn_model, ds_2018, cfg, level=level, flatten=False)
@@ -132,8 +142,8 @@ def run_evaluation(checkpoint_path: Path):
         logits_raw = cnn_raw(torch.tensor(X_2018_raw_cnn, dtype=torch.float32, device=device))
         prob_raw_2018 = torch.sigmoid(logits_raw).cpu().numpy().flatten()
         
-    plot_1year_slice(ds_2018, prob_lat_2018, str(out_dir / f"{ckpt_name}_cnn_latent_1year.png"), "CNN Latent", color="orange")
-    plot_1year_slice(ds_2018, prob_raw_2018, str(out_dir / f"{ckpt_name}_cnn_raw_1year.png"), "CNN Raw", color="brown")
+    plot_1year_slice(ds_2018, prob_lat_2018, str(slice_dir / f"{ckpt_name}_cnn_latent_1year.png"), "CNN Latent", color="orange")
+    plot_1year_slice(ds_2018, prob_raw_2018, str(slice_dir / f"{ckpt_name}_cnn_raw_1year.png"), "CNN Raw", color="brown")
 
     del cnn_model, cnn_lat, cnn_raw; gc.collect()
 
@@ -177,22 +187,22 @@ def run_evaluation(checkpoint_path: Path):
     res["XGBoost on latent"]["y_test"] = y_te_xgb
     res["XGBoost on raw (baseline)"]["y_test"] = y_te_raw_xgb
 
-    plot_predictions(test_ds, res["XGBoost on latent"]["y_pred"], res["XGBoost on latent"]["cm"], str(out_dir / f"{ckpt_name}_xgb_latent.png"), "orange", "XGBoost Latent Predictions")
-    plot_predictions(test_ds, res["XGBoost on raw (baseline)"]["y_pred"], res["XGBoost on raw (baseline)"]["cm"], str(out_dir / f"{ckpt_name}_xgb_raw.png"), "brown", "XGBoost Raw Predictions")
+    plot_predictions(test_ds, res["XGBoost on latent"]["y_pred"], res["XGBoost on latent"]["cm"], str(test_pred_dir / f"{ckpt_name}_xgb_latent.png"), "orange", "XGBoost Latent Predictions")
+    plot_predictions(test_ds, res["XGBoost on raw (baseline)"]["y_pred"], res["XGBoost on raw (baseline)"]["cm"], str(test_pred_dir / f"{ckpt_name}_xgb_raw.png"), "brown", "XGBoost Raw Predictions")
 
     # Save checkpoints
-    with open(out_dir / f"{ckpt_name}_xgb_latent.pkl", "wb") as f:
+    with open(chkpts_dir / f"{ckpt_name}_xgb_latent.pkl", "wb") as f:
         pickle.dump(xgb_lat, f)
-    with open(out_dir / f"{ckpt_name}_xgb_raw.pkl", "wb") as f:
+    with open(chkpts_dir / f"{ckpt_name}_xgb_raw.pkl", "wb") as f:
         pickle.dump(xgb_raw, f)
 
     # Plot ROC and PRC
     plot_roc_prc(y_te_xgb.flatten(), res["XGBoost on latent"]["y_prob"], 
-                 str(out_dir / f"{ckpt_name}_xgb_latent_roc.png"), 
-                 str(out_dir / f"{ckpt_name}_xgb_latent_prc.png"), "XGBoost Latent")
+                 str(roc_prc_dir / f"{ckpt_name}_xgb_latent_roc.png"), 
+                 str(roc_prc_dir / f"{ckpt_name}_xgb_latent_prc.png"), "XGBoost Latent")
     plot_roc_prc(y_te_raw_xgb.flatten(), res["XGBoost on raw (baseline)"]["y_prob"], 
-                 str(out_dir / f"{ckpt_name}_xgb_raw_roc.png"), 
-                 str(out_dir / f"{ckpt_name}_xgb_raw_prc.png"), "XGBoost Raw")
+                 str(roc_prc_dir / f"{ckpt_name}_xgb_raw_roc.png"), 
+                 str(roc_prc_dir / f"{ckpt_name}_xgb_raw_prc.png"), "XGBoost Raw")
 
     # 1-year slice plots
     X_2018_lat_xgb, _ = xgb_extract_features(xgb_model, ds_2018, cfg, level=level)
@@ -211,8 +221,8 @@ def run_evaluation(checkpoint_path: Path):
     if hasattr(prob_lat_2018_xgb, "cpu"): prob_lat_2018_xgb = prob_lat_2018_xgb.cpu().numpy()
     if hasattr(prob_raw_2018_xgb, "cpu"): prob_raw_2018_xgb = prob_raw_2018_xgb.cpu().numpy()
 
-    plot_1year_slice(ds_2018, prob_lat_2018_xgb, str(out_dir / f"{ckpt_name}_xgb_latent_1year.png"), "XGBoost Latent", color="orange")
-    plot_1year_slice(ds_2018, prob_raw_2018_xgb, str(out_dir / f"{ckpt_name}_xgb_raw_1year.png"), "XGBoost Raw", color="brown")
+    plot_1year_slice(ds_2018, prob_lat_2018_xgb, str(slice_dir / f"{ckpt_name}_xgb_latent_1year.png"), "XGBoost Latent", color="orange")
+    plot_1year_slice(ds_2018, prob_raw_2018_xgb, str(slice_dir / f"{ckpt_name}_xgb_raw_1year.png"), "XGBoost Raw", color="brown")
 
     del xgb_model, xgb_lat, xgb_raw; gc.collect()
     
