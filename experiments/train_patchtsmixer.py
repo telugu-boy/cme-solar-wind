@@ -107,8 +107,6 @@ CFG: dict[str, Any] = {
     # ── Dataset sliding window ─────────────────────────────────────────────
     "window_stride":     24,          # 2-hour stride for window sampling
 
-    # ── Downstream classifiers default settings ────────────────────────────
-    "classification_level": "patch",  # "patch" or "window"
 
     # ── Output ─────────────────────────────────────────────────────────────
     "checkpoint_dir": "checkpoints",
@@ -310,7 +308,6 @@ if __name__ == "__main__":
     parser.add_argument("--forecast_loss_weight", type=float, default=CFG["forecast_loss_weight"])
     parser.add_argument("--anomaly_loss_weight", type=float, default=CFG["anomaly_loss_weight"])
     parser.add_argument("--univariate",      action="store_true")
-    parser.add_argument("--level",           type=str,   default=CFG["classification_level"], choices=["patch", "window"])
     parser.add_argument("--checkpoint_name", type=str,   default="patchtsmixer_backbone_final.pt")
     parser.add_argument("--model_name",      type=str,   default=None, help="If provided, saves to results/full/<model_name>")
     args = parser.parse_args()
@@ -326,7 +323,6 @@ if __name__ == "__main__":
     CFG["forecast_loss_weight"] = args.forecast_loss_weight
     CFG["anomaly_loss_weight"]  = args.anomaly_loss_weight
     CFG["univariate_test"]  = args.univariate
-    CFG["classification_level"] = args.level
     CFG["checkpoint_name"]  = args.checkpoint_name
     
     if args.model_name:

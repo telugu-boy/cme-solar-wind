@@ -350,7 +350,7 @@ def main():
     model = build_backbone_from_config(cfg, state_dict)
     model = model.to(device)
 
-    level = cfg["classification_level"]
+    level = cfg.get("classification_level", "patch")
     print(f"\n[downstream] Extracting {level}-level latents...")
 
     X_tr_lat, y_tr = extract_features(model, train_ds, cfg, level=level, flatten=False)
