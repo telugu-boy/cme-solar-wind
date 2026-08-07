@@ -4,65 +4,32 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 
-def plot_predictions(dataset, y_pred, cm, out_path: str, color: str, title: str):
+def plot_predictions_events(dataset, pred_events, tp, fp, fn, out_path: str, color: str, title: str):
     """
-    Plots the B-field with predictions overlaid.
+    Plots the B-field with predicted event ranges overlaid as shaded bounding boxes.
     dataset: OmniPatchDataset
-    y_pred: (total_patches,) predicted binary labels
-    cm: confusion matrix array
-    out_path: str to save PNG
-    color: 'orange' or 'brown'
+    pred_events: List of [start_idx, end_idx] for merged predicted ICME events
     """
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     
-    P = dataset.num_patches
-    PS = dataset.patch_stride
-    PL = dataset.patch_length
-    
-    # Ensure y_pred is flattened correctly just in case
-    y_pred = y_pred.flatten()
-    
-    if len(y_pred) != len(dataset) * P:
-        print(f"Warning: y_pred length ({len(y_pred)}) does not match dataset length * P ({len(dataset) * P}). Visualization might be inaccurate.")
-        # Try to slice or pad, though this shouldn't happen
-        y_pred = y_pred[:len(dataset)*P]
-        
-    y_pred_reshaped = y_pred.reshape(len(dataset), P)
-    pred_ts = np.zeros(len(dataset.times))
-    count_ts = np.zeros(len(dataset.times))
-    
-    for idx, s in enumerate(dataset.window_starts):
-        for p in range(P):
-            p_start = s + p * PS
-            p_end = p_start + PL
-            pred_ts[p_start:p_end] += y_pred_reshaped[idx, p]
-            count_ts[p_start:p_end] += 1
-            
-    mask = count_ts > 0
-    pred_ts[mask] /= count_ts[mask]
-    
-    # Features are normalized. F is at index 0, flow_speed is at index 4
-    # based on CFG["raw_feature_cols"] = ["F", "BX_GSE", "BY_GSE", "BZ_GSE", "flow_speed", ...]
     F_field = dataset.data[:, 0]
     
     fig, ax = plt.subplots(figsize=(24, 6), dpi=300)
-    
     ax.plot(dataset.times, F_field, color='green', alpha=0.7, label='Total B-field (F)')
     
     y_min = F_field.min()
     y_max = F_field.max()
     
-    # Overlay predictions
-    # If pred_ts > 0.5 (majority of overlapping windows predict ICME)
-    ax.fill_between(dataset.times, y_min, y_max, where=(pred_ts > 0.5), 
-                    color=color, alpha=0.4, step='pre', label=f'{title}')
+    # Shade predicted events
+    for i, e in enumerate(pred_events):
+        start_t = dataset.times[e[0]]
+        end_t = dataset.times[e[1]]
+        lbl = f'{title}' if i == 0 else None
+        ax.axvspan(start_t, end_t, color=color, alpha=0.4, label=lbl)
     
     # Ground truth
     gt = dataset.timestep_labels
-    ax.fill_between(dataset.times, y_min, y_max, where=(gt > 0.5), 
-                    color='black', alpha=0.15, step='pre', label='Ground Truth ICME')
-    
     starts = []
     ends = []
     in_icme = False
@@ -77,7 +44,9 @@ def plot_predictions(dataset, y_pred, cm, out_path: str, color: str, title: str)
     if in_icme:
         ends.append(dataset.times[-1])
     
-    for s, e in zip(starts, ends):
+    for i, (s, e) in enumerate(zip(starts, ends)):
+        lbl = 'Ground Truth ICME' if i == 0 else None
+        ax.axvspan(s, e, color='black', alpha=0.15, label=lbl)
         ax.axvline(s, color='black', linestyle='--', alpha=0.8)
         ax.axvline(e, color='black', linestyle='--', alpha=0.8)
         
@@ -85,9 +54,9 @@ def plot_predictions(dataset, y_pred, cm, out_path: str, color: str, title: str)
     ax.set_xlabel("Time")
     ax.set_ylabel("Normalized Features")
     
-    # Add confusion matrix
-    cm_text = f"Confusion Matrix:\nTP: {cm[1,1]:,}  FP: {cm[0,1]:,}\nFN: {cm[1,0]:,}  TN: {cm[0,0]:,}"
-    ax.text(0.01, 0.95, cm_text, transform=ax.transAxes, fontsize=12, 
+    # Add metric text
+    metrics_text = f"IoU Events Metrics:\nTP: {tp}  FP: {fp}\nFN: {fn}"
+    ax.text(0.01, 0.95, metrics_text, transform=ax.transAxes, fontsize=12, 
             verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
             
     ax.legend(loc="upper right")
@@ -96,3 +65,32 @@ def plot_predictions(dataset, y_pred, cm, out_path: str, color: str, title: str)
     fig.savefig(out_path)
     plt.close(fig)
     print(f"[visualization] Saved {out_path}")
+
+def plot_gap_histogram(y_true, y_pred, out_path_true, out_path_pred, model_name, max_gap=20):
+    true_idx = np.where(y_true.flatten() == 1)[0]
+    true_gaps = np.diff(true_idx) if len(true_idx) > 1 else np.array([])
+    true_gaps = true_gaps[true_gaps > 1]
+    
+    pred_idx = np.where(y_pred.flatten() == 1)[0]
+    pred_gaps = np.diff(pred_idx) if len(pred_idx) > 1 else np.array([])
+    pred_gaps = pred_gaps[pred_gaps > 1]
+    
+    if len(true_gaps) > 0:
+        true_gaps_clipped = np.clip(true_gaps, 0, max_gap)
+        plt.figure(figsize=(10, 6))
+        plt.hist(true_gaps_clipped, bins=np.arange(1.5, max_gap + 1.5, 1), edgecolor='black')
+        plt.title(f"True ICME Gaps (>= {max_gap} binned together)")
+        plt.xlabel("Gap size (number of patches)")
+        plt.ylabel("Frequency")
+        plt.savefig(out_path_true)
+        plt.close()
+        
+    if len(pred_gaps) > 0:
+        pred_gaps_clipped = np.clip(pred_gaps, 0, max_gap)
+        plt.figure(figsize=(10, 6))
+        plt.hist(pred_gaps_clipped, bins=np.arange(1.5, max_gap + 1.5, 1), edgecolor='black')
+        plt.title(f"{model_name} Predicted ICME Gaps (>= {max_gap} binned together)")
+        plt.xlabel("Gap size (number of patches)")
+        plt.ylabel("Frequency")
+        plt.savefig(out_path_pred)
+        plt.close()

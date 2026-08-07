@@ -4,28 +4,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.metrics import roc_curve, auc, precision_recall_curve
 
-def plot_roc_prc(y_true, y_prob, out_path_roc, out_path_prc, title):
-    # ROC Plot
-    fig_roc, ax_roc = plt.subplots(figsize=(7, 6), dpi=300)
-    fpr, tpr, _ = roc_curve(y_true, y_prob)
-    roc_auc = auc(fpr, tpr)
-    ax_roc.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (area = {roc_auc:.4f})')
-    ax_roc.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
-    ax_roc.set_xlim([0.0, 1.0])
-    ax_roc.set_ylim([0.0, 1.05])
-    ax_roc.set_xlabel('False Positive Rate (1 - Specificity)')
-    ax_roc.set_ylabel('True Positive Rate (Sensitivity)')
-    ax_roc.set_title(f'{title} - ROC Curve')
-    ax_roc.legend(loc="lower right")
-    fig_roc.tight_layout()
-    fig_roc.savefig(out_path_roc)
-    plt.close(fig_roc)
-    
-    # PRC Plot
+def plot_event_prc(prc_recall, prc_precision, pr_auc, out_path_prc, title):
     fig_prc, ax_prc = plt.subplots(figsize=(7, 6), dpi=300)
-    precision, recall, _ = precision_recall_curve(y_true, y_prob)
-    pr_auc = auc(recall, precision)
-    ax_prc.plot(recall, precision, color='blue', lw=2, label=f'PRC curve (area = {pr_auc:.4f})')
+    ax_prc.plot(prc_recall, prc_precision, color='blue', lw=2, label=f'PRC curve (area = {pr_auc:.4f})')
     ax_prc.set_xlim([0.0, 1.0])
     ax_prc.set_ylim([0.0, 1.05])
     ax_prc.set_xlabel('Recall (Sensitivity)')

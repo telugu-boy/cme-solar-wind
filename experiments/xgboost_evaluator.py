@@ -192,13 +192,9 @@ def evaluate_classifier(
     test_loss = log_loss(y_test_int, y_prob)
 
     print(f"\n── {label} ──")
-    print(classification_report(
-        y_test_int, y_pred,
-        target_names=["ambient", "ICME"],
-        zero_division=0,
-    ))
-    print(f"Confusion Matrix: TP={cm[1,1]}, FP={cm[0,1]}, FN={cm[1,0]}, TN={cm[0,0]}")
-    print(f"AUC ROC: {roc_auc:.4f} | AUC PRC: {pr_auc:.4f} | Test LogLoss: {test_loss:.4f}")
+    print(f"Precision: {prec:.4f} | Recall: {rec:.4f} | F1-Score: {f1:.4f}")
+    print(f"Confusion Matrix: TP={cm[1,1]}, FP={cm[0,1]}, FN={cm[1,0]}")
+    print(f"AUC PRC: {pr_auc:.4f} | Test LogLoss: {test_loss:.4f}")
 
     return {
         "precision": prec, 
@@ -364,9 +360,8 @@ def main():
         if metrics:
             print(f"  {name:<20}  F1={metrics['f1']:.4f}  "
                   f"P={metrics['precision']:.4f}  R={metrics['recall']:.4f}  "
-                  f"ROC_AUC={metrics['roc_auc']:.4f}  PR_AUC={metrics['pr_auc']:.4f}  "
-                  f"LogLoss={metrics['logloss']:.4f}  "
-                  f"CM=[TP:{metrics['cm'][1,1]} FP:{metrics['cm'][0,1]} FN:{metrics['cm'][1,0]} TN:{metrics['cm'][0,0]}]")
+                  f"PR_AUC={metrics['pr_auc']:.4f}  LogLoss={metrics['logloss']:.4f}  "
+                  f"CM=[TP:{metrics['cm'][1,1]} FP:{metrics['cm'][0,1]} FN:{metrics['cm'][1,0]}]")
 
     # results_df = pd.DataFrame(results).T
     # results_dir = Path(cfg["results_dir"])
