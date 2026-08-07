@@ -23,8 +23,8 @@ if default_cache_path.exists():
 import torch
 # Import required functions from existing evaluators
 from experiments.loaders import read_omni_cache, get_cr_icme_dataframe, engineer_features, make_datasets, OmniPatchDataset, build_icme_intervals, load_f107_index
-from experiments.visualize import plot_predictions_events, plot_gap_histogram
-from experiments.plot_utils import plot_event_prc, plot_logit_slice
+from experiments.visualize import plot_combined_predictions, plot_gap_histogram
+from experiments.plot_utils import plot_combined_prc_merged, plot_combined_roc_patch, plot_combined_prc_patch, plot_combined_logit_slice
 from experiments.event_eval import evaluate_events
 
 import shutil
@@ -57,7 +57,7 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
     slice_dir = out_dir / "logit_plots"
     slice_dir.mkdir(exist_ok=True)
     test_pred_dir = out_dir / "test_predictions"
-    test_pred_dir.mkdir(exist_ok=True)
+    test_pred_dir.mkdir(parents=True, exist_ok=True)
     misc_dir = out_dir / "misc" / "icme_pred_gaps"
     misc_dir.mkdir(parents=True, exist_ok=True)
     misc_dir.mkdir(parents=True, exist_ok=True)
@@ -121,6 +121,7 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
 
     # Dictionary to hold the raw results
     res = {}
+    logit_probs = {}
     
     ckpt_name = checkpoint_path.stem
 
@@ -162,16 +163,19 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
             cnn_raw.load_state_dict(torch.load(chkpts_dir / f"{ckpt_name}_cnn_raw.pt", map_location=device, weights_only=True))
 
         res["CNN on latent"] = cnn_evaluate_classifier(cnn_lat, X_te_lat_cnn, y_te_cnn, "CNN Latent", device=device)
+        res["CNN on latent"]["y_true_patch"] = y_te_cnn
+        res["CNN on latent"]["y_prob_patch"] = res["CNN on latent"]["y_prob"]
         del X_te_lat_cnn; gc.collect()
 
         res["CNN on raw (baseline)"] = cnn_evaluate_classifier(cnn_raw, X_te_raw_cnn, y_te_raw_cnn, "CNN Raw", device=device)
+        res["CNN on raw (baseline)"]["y_true_patch"] = y_te_raw_cnn
+        res["CNN on raw (baseline)"]["y_prob_patch"] = res["CNN on raw (baseline)"]["y_prob"]
         del X_te_raw_cnn; gc.collect()
     
         res["CNN on latent"].update(evaluate_events(test_ds, res["CNN on latent"]["y_prob"], merge_threshold, iou_threshold, conf_agg))
         res["CNN on raw (baseline)"].update(evaluate_events(test_ds, res["CNN on raw (baseline)"]["y_prob"], merge_threshold, iou_threshold, conf_agg))
 
-        plot_predictions_events(test_ds, res["CNN on latent"]["pred_events"], res["CNN on latent"]["TP"], res["CNN on latent"]["FP"], res["CNN on latent"]["FN"], str(test_pred_dir / f"{ckpt_name}_cnn_latent.png"), "purple", "CNN Latent Predictions")
-        plot_predictions_events(test_ds, res["CNN on raw (baseline)"]["pred_events"], res["CNN on raw (baseline)"]["TP"], res["CNN on raw (baseline)"]["FP"], res["CNN on raw (baseline)"]["FN"], str(test_pred_dir / f"{ckpt_name}_cnn_raw.png"), "darkgoldenrod", "CNN Raw Predictions")
+        # (Plots are now handled jointly at the end)
 
         plot_gap_histogram(
             y_te_cnn, res["CNN on latent"]["y_pred"], 
@@ -186,11 +190,7 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
             "CNN Raw"
         )
 
-        # Plot PRC
-        plot_event_prc(res["CNN on latent"]["prc_recall"], res["CNN on latent"]["prc_precision"], res["CNN on latent"]["pr_auc"],
-                     str(roc_prc_dir / f"{ckpt_name}_cnn_latent_prc.png"), "CNN Latent")
-        plot_event_prc(res["CNN on raw (baseline)"]["prc_recall"], res["CNN on raw (baseline)"]["prc_precision"], res["CNN on raw (baseline)"]["pr_auc"],
-                     str(roc_prc_dir / f"{ckpt_name}_cnn_raw_prc.png"), "CNN Raw")
+        # (Plots are now handled jointly at the end)
 
         # 1-year slice plots
         Xlogits_lat_cnn, _ = cnn_extract_features(cnn_model, dslogits, cfg, level=level, flatten=False)
@@ -207,8 +207,8 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
     
         del Xlogits_lat_cnn, Xlogits_raw_cnn; gc.collect()
         
-        plot_logit_slice(dslogits, prob_latlogits, str(slice_dir / f"{ckpt_name}_cnn_latent_logit.png"), "CNN Latent", color="purple", logitplot_start_date=logitplot_start_date, logitplot_end_date=logitplot_end_date)
-        plot_logit_slice(dslogits, prob_rawlogits, str(slice_dir / f"{ckpt_name}_cnn_raw_logit.png"), "CNN Raw", color="darkgoldenrod", logitplot_start_date=logitplot_start_date, logitplot_end_date=logitplot_end_date)
+        logit_probs["CNN on latent"] = prob_latlogits
+        logit_probs["CNN on raw (baseline)"] = prob_rawlogits
     
         del cnn_model, cnn_lat, cnn_raw; gc.collect()
 
@@ -252,17 +252,16 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
         print("Testing XGB Latent...")
         X_te_lat_xgb, y_te_xgb = xgb_extract_features(xgb_model, test_ds, cfg, level=level)
         res["XGBoost on latent"] = xgb_evaluate_classifier(xgb_lat, X_te_lat_xgb, y_te_xgb, "XGBoost Latent")
+        res["XGBoost on latent"]["y_true_patch"] = y_te_xgb
+        res["XGBoost on latent"]["y_prob_patch"] = res["XGBoost on latent"]["y_prob"]
         res["XGBoost on latent"].update(evaluate_events(test_ds, res["XGBoost on latent"]["y_prob"], merge_threshold, iou_threshold, conf_agg))
-        
-        plot_predictions_events(test_ds, res["XGBoost on latent"]["pred_events"], res["XGBoost on latent"]["TP"], res["XGBoost on latent"]["FP"], res["XGBoost on latent"]["FN"], str(test_pred_dir / f"{ckpt_name}_xgb_latent.png"), "purple", "XGBoost Latent Predictions")
         plot_gap_histogram(
             y_te_xgb, res["XGBoost on latent"]["y_pred"], 
             str(misc_dir / f"true_gaps.png"), 
             str(misc_dir / f"{ckpt_name}_xgb_latent_gaps.png"), 
             "XGBoost Latent"
         )
-        plot_event_prc(res["XGBoost on latent"]["prc_recall"], res["XGBoost on latent"]["prc_precision"], res["XGBoost on latent"]["pr_auc"],
-                     str(roc_prc_dir / f"{ckpt_name}_xgb_latent_prc.png"), "XGBoost Latent")
+        # (Plots are now handled jointly at the end)
 
         del X_te_lat_xgb; gc.collect()
 
@@ -287,9 +286,9 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
 
         X_te_raw_xgb, y_te_raw_xgb = xgb_extract_raw(test_ds, cfg, level=level)
         res["XGBoost on raw (baseline)"] = xgb_evaluate_classifier(xgb_raw, X_te_raw_xgb, y_te_raw_xgb, "XGBoost Raw")
+        res["XGBoost on raw (baseline)"]["y_true_patch"] = y_te_raw_xgb
+        res["XGBoost on raw (baseline)"]["y_prob_patch"] = res["XGBoost on raw (baseline)"]["y_prob"]
         res["XGBoost on raw (baseline)"].update(evaluate_events(test_ds, res["XGBoost on raw (baseline)"]["y_prob"], merge_threshold, iou_threshold, conf_agg))
-
-        plot_predictions_events(test_ds, res["XGBoost on raw (baseline)"]["pred_events"], res["XGBoost on raw (baseline)"]["TP"], res["XGBoost on raw (baseline)"]["FP"], res["XGBoost on raw (baseline)"]["FN"], str(test_pred_dir / f"{ckpt_name}_xgb_raw.png"), "darkgoldenrod", "XGBoost Raw Predictions")
 
         plot_gap_histogram(
             y_te_raw_xgb, res["XGBoost on raw (baseline)"]["y_pred"], 
@@ -298,8 +297,7 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
             "XGBoost Raw"
         )
 
-        plot_event_prc(res["XGBoost on raw (baseline)"]["prc_recall"], res["XGBoost on raw (baseline)"]["prc_precision"], res["XGBoost on raw (baseline)"]["pr_auc"],
-                     str(roc_prc_dir / f"{ckpt_name}_xgb_raw_prc.png"), "XGBoost Raw")
+        # (Plots are now handled jointly at the end)
 
         # 1-year slice plots
         Xlogits_lat_xgb, _ = xgb_extract_features(xgb_model, dslogits, cfg, level=level)
@@ -323,12 +321,32 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
         if hasattr(prob_latlogits_xgb, "cpu"): prob_latlogits_xgb = prob_latlogits_xgb.cpu().numpy()
         if hasattr(prob_rawlogits_xgb, "cpu"): prob_rawlogits_xgb = prob_rawlogits_xgb.cpu().numpy()
 
-        plot_logit_slice(dslogits, prob_latlogits_xgb, str(slice_dir / f"{ckpt_name}_xgb_latent_logit.png"), "XGBoost Latent", color="purple", logitplot_start_date=logitplot_start_date, logitplot_end_date=logitplot_end_date)
-        plot_logit_slice(dslogits, prob_rawlogits_xgb, str(slice_dir / f"{ckpt_name}_xgb_raw_logit.png"), "XGBoost Raw", color="darkgoldenrod", logitplot_start_date=logitplot_start_date, logitplot_end_date=logitplot_end_date)
+        logit_probs["XGBoost on latent"] = prob_latlogits_xgb
+        logit_probs["XGBoost on raw (baseline)"] = prob_rawlogits_xgb
     
         del xgb_model, xgb_lat, xgb_raw; gc.collect()
         
-    return res
+    # ---------------- Combined Plots ----------------
+    print("\n=== Generating Combined Plots ===")
+    plot_combined_predictions(
+        test_ds, res, str(test_pred_dir / f"{ckpt_name}_merged.png"),
+        is_patch=False, merge_threshold=merge_threshold, iou_threshold=iou_threshold, conf_agg=conf_agg
+    )
+    plot_combined_predictions(
+        test_ds, res, str(test_pred_dir / f"{ckpt_name}_patch.png"),
+        is_patch=True, merge_threshold=merge_threshold, iou_threshold=iou_threshold, conf_agg=conf_agg
+    )
+    
+    plot_combined_prc_merged(
+        res, str(roc_prc_dir / f"{ckpt_name}_prc_merged.png"),
+        merge_threshold=merge_threshold, iou_threshold=iou_threshold, conf_agg=conf_agg
+    )
+    plot_combined_roc_patch(res, str(roc_prc_dir / f"{ckpt_name}_roc_patch.png"))
+    plot_combined_prc_patch(res, str(roc_prc_dir / f"{ckpt_name}_prc_patch.png"))
+    
+    plot_combined_logit_slice(dslogits, logit_probs, str(slice_dir / f"{ckpt_name}_logits.png"), logitplot_start_date, logitplot_end_date)
+    
+    return res, test_ds
 
 def format_tsv(res, out_path, model_type="XGBoost"):
     latent_key = f"{model_type} on latent"
@@ -348,6 +366,68 @@ def format_tsv(res, out_path, model_type="XGBoost"):
     # Save to TSV
     df.to_csv(out_path, sep="\t", index=False)
     print(f"\nSaved TSV to {out_path}")
+
+def debug_show_plot(dataset, res, merge_threshold=4, iou_threshold=0.3):
+    import matplotlib
+    matplotlib.use("TkAgg")
+    import matplotlib.pyplot as plt
+    from experiments.event_eval import evaluate_events
+    
+    models = ['CNN on latent', 'CNN on raw (baseline)', 'XGBoost on latent', 'XGBoost on raw (baseline)']
+    color_map = {
+        'CNN on latent': 'purple',
+        'CNN on raw (baseline)': 'darkgoldenrod',
+        'XGBoost on latent': 'purple',
+        'XGBoost on raw (baseline)': 'darkgoldenrod'
+    }
+    
+    gt = dataset.timestep_labels
+    starts = []
+    ends = []
+    in_icme = False
+    for i in range(len(gt)):
+        if gt[i] > 0.5 and not in_icme:
+            starts.append(dataset.times[i])
+            in_icme = True
+        elif gt[i] <= 0.5 and in_icme:
+            ends.append(dataset.times[i])
+            in_icme = False
+    if in_icme:
+        ends.append(dataset.times[-1])
+        
+    F_field = dataset.data[:, 0]
+
+    fig, axes = plt.subplots(nrows=4, ncols=1, sharex=True, figsize=(24, 12))
+    
+    for idx, model_name in enumerate(models):
+        ax = axes[idx]
+        ax.plot(dataset.times, F_field, color='green', alpha=0.7, label='Total B-field (F)')
+        
+        for i, (s, e) in enumerate(zip(starts, ends)):
+            lbl = 'Ground Truth ICME' if i == 0 else None
+            ax.axvspan(s, e, color='black', alpha=0.15, label=lbl)
+            
+        if model_name in res:
+            res_dict = res[model_name]
+            ev = evaluate_events(dataset, res_dict["y_prob"], merge_threshold_patches=merge_threshold, iou_threshold=iou_threshold, conf_agg='max')
+            pred_events = ev["pred_events"]
+            
+            color = color_map.get(model_name, 'purple')
+            print(f"DEBUG: [{model_name}] Found {len(pred_events)} predicted events.")
+            for i, e in enumerate(pred_events):
+                start_t = dataset.times[e[0]]
+                end_t = dataset.times[e[1]]
+                print(f"  Event {i}: indices {e[0]} to {e[1]} -> times {start_t} to {end_t}")
+                lbl = f'{model_name}' if i == 0 else None
+                ax.axvspan(start_t, end_t, color=color, alpha=0.4, label=lbl)
+            ax.set_title(f"DEBUG INTERACTIVE: {model_name}")
+        else:
+            ax.set_title(f"DEBUG INTERACTIVE: {model_name} (Not Run)")
+
+        ax.legend(loc="upper right")
+
+    plt.tight_layout()
+    plt.show()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run evaluators and output required TSV and images")
@@ -391,7 +471,7 @@ if __name__ == "__main__":
         print(f"The valid test set date range is from {cfg['val_end']} to {cfg['omni_end']}.")
         sys.exit(1)
         
-    res = run_evaluation(
+    res, test_ds = run_evaluation(
         ckpt_path, 
         run_cnn=args.cnn, 
         run_xgb=args.xgb, 
@@ -403,6 +483,10 @@ if __name__ == "__main__":
         iou_threshold=args.iou_threshold,
         conf_agg=args.conf_agg
     )
+    
+    # Call the debug function so the user can see it right now (they can comment it out later)
+    if res:
+        debug_show_plot(test_ds, res, args.merge_threshold, args.iou_threshold)
     
     tsv_dir = ckpt_path.parent / "metrics_tsv"
     tsv_dir.mkdir(exist_ok=True)

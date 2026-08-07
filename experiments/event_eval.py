@@ -142,6 +142,7 @@ def evaluate_events(dataset, y_prob, merge_threshold_patches=4, iou_threshold=0.
         "prc_precision": prc_precision,
         "prc_recall": prc_recall,
         "pred_events": pred_events,
+        "raw_pred_events": raw_pred_events,
         "gt_events": gt_events,
         "pred_confs": pred_confs,
         "prob_ts": prob_ts

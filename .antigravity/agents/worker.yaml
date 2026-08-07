@@ -1,0 +1,11 @@
+name: worker
+description: "MANDATORY EXECUTION AGENT. Handles ALL direct code writing, file edits, refactoring, unit test creation, terminal command execution, and bug fixes. The main planner MUST delegate any file modification or terminal task to this agent."
+model: "gemini-3.6-flash"  # Forces this subagent to use Gemini 3.6 Flash
+mainAgent: false
+subagent: true
+commandExecutionPolicy: sandbox
+tools:
+  - view_file
+  - replace_file_content
+  - run_command
+  - grep_search

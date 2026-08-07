@@ -4,29 +4,21 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 
-def plot_predictions_events(dataset, pred_events, tp, fp, fn, out_path: str, color: str, title: str):
-    """
-    Plots the B-field with predicted event ranges overlaid as shaded bounding boxes.
-    dataset: OmniPatchDataset
-    pred_events: List of [start_idx, end_idx] for merged predicted ICME events
-    """
+def plot_combined_predictions(dataset, res, out_path: str, is_patch=False, merge_threshold=None, iou_threshold=None, conf_agg=None):
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     
+    models = ['CNN on latent', 'CNN on raw (baseline)', 'XGBoost on latent', 'XGBoost on raw (baseline)']
+    color_map = {
+        'CNN on latent': 'purple',
+        'CNN on raw (baseline)': 'darkgoldenrod',
+        'XGBoost on latent': 'purple',
+        'XGBoost on raw (baseline)': 'darkgoldenrod'
+    }
+    
     F_field = dataset.data[:, 0]
     
-    fig, ax = plt.subplots(figsize=(24, 6), dpi=300)
-    ax.plot(dataset.times, F_field, color='green', alpha=0.7, label='Total B-field (F)')
-    
-    y_min = F_field.min()
-    y_max = F_field.max()
-    
-    # Shade predicted events
-    for i, e in enumerate(pred_events):
-        start_t = dataset.times[e[0]]
-        end_t = dataset.times[e[1]]
-        lbl = f'{title}' if i == 0 else None
-        ax.axvspan(start_t, end_t, color=color, alpha=0.4, label=lbl)
+    fig, axes = plt.subplots(nrows=4, ncols=1, sharex=True, figsize=(24, 12), dpi=300)
     
     # Ground truth
     gt = dataset.timestep_labels
@@ -43,24 +35,53 @@ def plot_predictions_events(dataset, pred_events, tp, fp, fn, out_path: str, col
             
     if in_icme:
         ends.append(dataset.times[-1])
-    
-    for i, (s, e) in enumerate(zip(starts, ends)):
-        lbl = 'Ground Truth ICME' if i == 0 else None
-        ax.axvspan(s, e, color='black', alpha=0.15, label=lbl)
-        ax.axvline(s, color='black', linestyle='--', alpha=0.8)
-        ax.axvline(e, color='black', linestyle='--', alpha=0.8)
         
-    ax.set_title(f"{title}")
-    ax.set_xlabel("Time")
-    ax.set_ylabel("Normalized Features")
-    
-    # Add metric text
-    metrics_text = f"IoU Events Metrics:\nTP: {tp}  FP: {fp}\nFN: {fn}"
-    ax.text(0.01, 0.95, metrics_text, transform=ax.transAxes, fontsize=12, 
-            verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
+    param_items = []
+    if not is_patch:
+        if merge_threshold is not None:
+            param_items.append(f"merge_threshold={merge_threshold}")
+        if iou_threshold is not None:
+            param_items.append(f"iou_threshold={iou_threshold}")
+        if conf_agg is not None:
+            param_items.append(f"conf_agg={conf_agg}")
+    param_str = ", ".join(param_items) if param_items else ""
+
+    for idx, model_name in enumerate(models):
+        ax = axes[idx]
+        ax.plot(dataset.times, F_field, color='green', alpha=0.7, label='Total B-field (F)')
+        
+        for i, (s, e) in enumerate(zip(starts, ends)):
+            lbl = 'Ground Truth ICME' if i == 0 else None
+            ax.axvspan(s, e, color='black', alpha=0.15, label=lbl)
+            ax.axvline(s, color='black', linestyle='--', alpha=0.8)
+            ax.axvline(e, color='black', linestyle='--', alpha=0.8)
             
-    ax.legend(loc="upper right")
-    
+        if model_name in res:
+            res_dict = res[model_name]
+            pred_events = res_dict["raw_pred_events"] if is_patch else res_dict["pred_events"]
+            color = color_map.get(model_name, 'purple')
+            
+            for i, e_idx in enumerate(pred_events):
+                start_t = dataset.times[e_idx[0]]
+                end_t = dataset.times[e_idx[1]]
+                lbl = f'{model_name}' if i == 0 else None
+                ax.axvspan(start_t, end_t, color=color, alpha=0.4, label=lbl)
+                
+            if not is_patch:
+                tp, fp, fn = res_dict.get("TP", 0), res_dict.get("FP", 0), res_dict.get("FN", 0)
+                metrics_text = f"IoU Events Metrics:\nTP: {tp}  FP: {fp}\nFN: {fn}"
+                ax.text(0.01, 0.95, metrics_text, transform=ax.transAxes, fontsize=12, 
+                        verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
+                        
+        title_suffix = " (Patch Predictions)" if is_patch else " (Merged Predictions)"
+        title = f"{model_name}{title_suffix}"
+        if param_str:
+            title += f" ({param_str})"
+        ax.set_title(title)
+        ax.set_ylabel("Normalized Features")
+        ax.legend(loc="upper right")
+        
+    axes[-1].set_xlabel("Time")
     plt.tight_layout()
     fig.savefig(out_path)
     plt.close(fig)
