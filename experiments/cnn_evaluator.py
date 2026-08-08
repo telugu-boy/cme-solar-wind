@@ -32,7 +32,7 @@ from torch.utils.data import TensorDataset, DataLoader
 
 from .loaders import (
     read_omni_cache,
-    get_cr_icme_dataframe,
+    get_icme_intervals_from_lists,
     engineer_features,
     make_datasets,
     VectorizedGPULoader,
@@ -313,6 +313,8 @@ def main():
                         help="Path to saved backbone checkpoint package")
     parser.add_argument("--level", type=str, default=None, choices=["patch", "window"],
                         help="Force classification level (overrides config if specified)")
+    parser.add_argument("--train_icme_lists", nargs="+", default=None, help="List of train ICME catalogs")
+    parser.add_argument("--test_icme_lists", nargs="+", default=None, help="List of test ICME catalogs")
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -331,16 +333,24 @@ def main():
     cfg["device"] = device
     if args.level is not None:
         cfg["classification_level"] = args.level
+    train_lists = args.train_icme_lists if args.train_icme_lists else ["cr"]
+    test_lists = args.test_icme_lists if args.test_icme_lists else ["cr"]
 
+    print(f"\n[data] Using ICME Catalogs for Downstream:")
+    print(f"       Train/Val: {train_lists}")
+    print(f"       Test:      {test_lists}\n")
 
     omni_full = read_omni_cache(Path(cfg["cache_path"]))
     omni_df   = omni_full.loc[str(cfg["omni_start"]) : str(cfg["omni_end"])].copy()
-    cr_icmes  = get_cr_icme_dataframe(cfg["omni_start"], cfg["omni_end"], cfg["icme_catalog_path"])
+
+    train_intervals = get_icme_intervals_from_lists(train_lists, cfg["omni_start"], cfg["omni_end"])
+    val_intervals = get_icme_intervals_from_lists(train_lists, cfg["omni_start"], cfg["omni_end"])
+    test_intervals = get_icme_intervals_from_lists(test_lists, cfg["omni_start"], cfg["omni_end"])
 
     omni_df = engineer_features(omni_df, cfg)
 
     train_ds, val_ds, test_ds, _ = make_datasets(
-        omni_df, cr_icmes, feature_cols, cfg, scaler=scaler
+        omni_df, train_intervals, val_intervals, test_intervals, feature_cols, cfg, scaler=scaler
     )
 
     model = build_backbone_from_config(cfg, state_dict)

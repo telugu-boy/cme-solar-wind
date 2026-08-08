@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 
-def plot_combined_predictions(dataset, res, out_path: str, is_patch=False, merge_threshold=None, iou_threshold=None, conf_agg=None):
+def plot_combined_predictions(dataset, res, out_path: str, is_patch=False, merge_threshold=None, iou_threshold=None, conf_agg=None, title_suffix=""):
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     
@@ -73,10 +73,11 @@ def plot_combined_predictions(dataset, res, out_path: str, is_patch=False, merge
                 ax.text(0.01, 0.95, metrics_text, transform=ax.transAxes, fontsize=12, 
                         verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
                         
-        title_suffix = " (Patch Predictions)" if is_patch else " (Merged Predictions)"
-        title = f"{model_name}{title_suffix}"
+        local_title_suffix = " (Patch Predictions)" if is_patch else " (Merged Predictions)"
+        title = f"{model_name}{local_title_suffix}"
         if param_str:
             title += f" ({param_str})"
+        title += title_suffix
         ax.set_title(title)
         ax.set_ylabel("Normalized Features")
         ax.legend(loc="upper right")
@@ -87,7 +88,7 @@ def plot_combined_predictions(dataset, res, out_path: str, is_patch=False, merge
     plt.close(fig)
     print(f"[visualization] Saved {out_path}")
 
-def plot_gap_histogram(y_true, y_pred, out_path_true, out_path_pred, model_name, max_gap=20):
+def plot_gap_histogram(y_true, y_pred, out_path_true, out_path_pred, model_name, max_gap=20, title_suffix=""):
     true_idx = np.where(y_true.flatten() == 1)[0]
     true_gaps = np.diff(true_idx) if len(true_idx) > 1 else np.array([])
     true_gaps = true_gaps[true_gaps > 1]
@@ -100,7 +101,7 @@ def plot_gap_histogram(y_true, y_pred, out_path_true, out_path_pred, model_name,
         true_gaps_clipped = np.clip(true_gaps, 0, max_gap)
         plt.figure(figsize=(10, 6))
         plt.hist(true_gaps_clipped, bins=np.arange(1.5, max_gap + 1.5, 1), edgecolor='black')
-        plt.title(f"True ICME Gaps (>= {max_gap} binned together)")
+        plt.title(f"True ICME Gaps (>= {max_gap} binned together)" + title_suffix)
         plt.xlabel("Gap size (number of patches)")
         plt.ylabel("Frequency")
         plt.savefig(out_path_true)
@@ -110,7 +111,7 @@ def plot_gap_histogram(y_true, y_pred, out_path_true, out_path_pred, model_name,
         pred_gaps_clipped = np.clip(pred_gaps, 0, max_gap)
         plt.figure(figsize=(10, 6))
         plt.hist(pred_gaps_clipped, bins=np.arange(1.5, max_gap + 1.5, 1), edgecolor='black')
-        plt.title(f"{model_name} Predicted ICME Gaps (>= {max_gap} binned together)")
+        plt.title(f"{model_name} Predicted ICME Gaps (>= {max_gap} binned together)" + title_suffix)
         plt.xlabel("Gap size (number of patches)")
         plt.ylabel("Frequency")
         plt.savefig(out_path_pred)

@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.metrics import roc_curve, auc, precision_recall_curve
 
-def plot_combined_prc_merged(res, out_path, merge_threshold=None, iou_threshold=None, conf_agg=None):
+def plot_combined_prc_merged(res, out_path, merge_threshold=None, iou_threshold=None, conf_agg=None, title_suffix=""):
     fig_prc, ax_prc = plt.subplots(figsize=(7, 6), dpi=300)
     
     colors = {
@@ -36,13 +36,14 @@ def plot_combined_prc_merged(res, out_path, merge_threshold=None, iou_threshold=
     title = 'Merged Precision-Recall Curve'
     if param_items:
         title += f"\n({', '.join(param_items)})"
+    title += title_suffix
     ax_prc.set_title(title)
     ax_prc.legend(loc="lower left")
     fig_prc.tight_layout()
     fig_prc.savefig(out_path)
     plt.close(fig_prc)
 
-def plot_combined_roc_patch(res, out_path):
+def plot_combined_roc_patch(res, out_path, title_suffix=""):
     fig_roc, ax_roc = plt.subplots(figsize=(7, 6), dpi=300)
     
     colors = {
@@ -67,14 +68,14 @@ def plot_combined_roc_patch(res, out_path):
     ax_roc.set_ylim([0.0, 1.05])
     ax_roc.set_xlabel('False Positive Rate')
     ax_roc.set_ylabel('True Positive Rate')
-    ax_roc.set_title('Patch-level ROC Curve')
+    ax_roc.set_title('Patch-level ROC Curve' + title_suffix)
     ax_roc.legend(loc="lower right")
 
     fig_roc.tight_layout()
     fig_roc.savefig(out_path)
     plt.close(fig_roc)
 
-def plot_combined_prc_patch(res, out_path):
+def plot_combined_prc_patch(res, out_path, title_suffix=""):
     fig_prc, ax_prc = plt.subplots(figsize=(7, 6), dpi=300)
     
     colors = {
@@ -98,14 +99,14 @@ def plot_combined_prc_patch(res, out_path):
     ax_prc.set_ylim([0.0, 1.05])
     ax_prc.set_xlabel('Recall (Sensitivity)')
     ax_prc.set_ylabel('Precision (Positive Predictive Value)')
-    ax_prc.set_title('Patch-level Precision-Recall Curve')
+    ax_prc.set_title('Patch-level Precision-Recall Curve' + title_suffix)
     ax_prc.legend(loc="lower left")
 
     fig_prc.tight_layout()
     fig_prc.savefig(out_path)
     plt.close(fig_prc)
 
-def plot_combined_logit_slice(dataset, logit_probs_dict, out_path, logitplot_start_date="2015-07-01", logitplot_end_date="2016-07-01"):
+def plot_combined_logit_slice(dataset, logit_probs_dict, out_path, logitplot_start_date="2015-07-01", logitplot_end_date="2016-07-01", title_suffix=""):
     models = ['CNN on latent', 'CNN on raw (baseline)', 'XGBoost on latent', 'XGBoost on raw (baseline)']
     colors = {
         'CNN on latent': 'purple',
@@ -154,7 +155,7 @@ def plot_combined_logit_slice(dataset, logit_probs_dict, out_path, logitplot_sta
         ax2.fill_between(dataset.times, 0, 1, where=(gt > 0.5), 
                         color='black', alpha=0.15, step='pre', label='Ground Truth ICME')
         
-        ax.set_title(f"{model_name} - Logit Plot ({logitplot_start_date} to {logitplot_end_date})")
+        ax.set_title(f"{model_name} - Logit Plot ({logitplot_start_date} to {logitplot_end_date})" + title_suffix)
         ax.set_ylabel("Normalized B-field")
         ax2.set_ylabel("Probability (0 to 1)")
         

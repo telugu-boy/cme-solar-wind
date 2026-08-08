@@ -30,7 +30,7 @@ from transformers import PatchTSMixerConfig
 
 from .loaders import (
     read_omni_cache,
-    get_cr_icme_dataframe,
+    get_icme_intervals_from_lists,
     engineer_features,
     select_feature_cols,
     make_datasets,
@@ -42,7 +42,9 @@ from .tsmixer_backbone import PatchTSMixerICMEBackbone
 CFG: dict[str, Any] = {
     # ── Data ──────────────────────────────────────────────────────────────
     "cache_path":          "data/omni_cache_5min_full.parquet",
-    "icme_catalog_path":   "data/icme_catalog.csv",
+    "train_icme_lists":    ["cr"],
+    "val_icme_lists":      ["cr"],
+    "test_icme_lists":     ["cr"],
     "omni_start":          Date(1996, 5, 1),
     "omni_end":            Date(2020, 1, 1),
 
@@ -270,15 +272,19 @@ def main(cfg: dict = CFG) -> None:
     omni_full = read_omni_cache(Path(cfg["cache_path"]))
     omni_df   = omni_full.loc[str(cfg["omni_start"]) : str(cfg["omni_end"])].copy()
 
-    cr_icmes  = get_cr_icme_dataframe(cfg["omni_start"], cfg["omni_end"], cfg["icme_catalog_path"])
-    print(f"[data] OMNI shape={omni_df.shape}  ICME events={len(cr_icmes)}")
+    train_intervals = get_icme_intervals_from_lists(cfg.get("train_icme_lists", ["cr"]), cfg["omni_start"], cfg["omni_end"])
+    val_intervals = get_icme_intervals_from_lists(cfg.get("val_icme_lists", ["cr"]), cfg["omni_start"], cfg["omni_end"])
+    test_intervals = get_icme_intervals_from_lists(cfg.get("test_icme_lists", ["cr"]), cfg["omni_start"], cfg["omni_end"])
+    print(f"[data] OMNI shape={omni_df.shape}")
 
     omni_df = engineer_features(omni_df, cfg)
     feature_cols = select_feature_cols(omni_df, cfg)
     cfg["_n_features"] = len(feature_cols)
     print(f"[features] {feature_cols}")
 
-    train_ds, val_ds, _, scaler = make_datasets(omni_df, cr_icmes, feature_cols, cfg)
+    train_ds, val_ds, _, scaler = make_datasets(
+        omni_df, train_intervals, val_intervals, test_intervals, feature_cols, cfg
+    )
     pos_weight = train_ds.icme_patch_ratio()
 
     model = build_backbone(cfg, pos_weight=pos_weight)
@@ -310,6 +316,9 @@ if __name__ == "__main__":
     parser.add_argument("--univariate",      action="store_true")
     parser.add_argument("--checkpoint_name", type=str,   default="patchtsmixer_backbone_final.pt")
     parser.add_argument("--model_name",      type=str,   default=None, help="If provided, saves to results/full/<model_name>")
+    parser.add_argument("--train_icme_lists", nargs="+",  default=CFG.get("train_icme_lists", ["cr"]))
+    parser.add_argument("--val_icme_lists",   nargs="+",  default=CFG.get("val_icme_lists", ["cr"]))
+    parser.add_argument("--test_icme_lists",  nargs="+",  default=CFG.get("test_icme_lists", ["cr"]))
     args = parser.parse_args()
 
     CFG["context_length"]   = args.context_length
@@ -324,6 +333,9 @@ if __name__ == "__main__":
     CFG["anomaly_loss_weight"]  = args.anomaly_loss_weight
     CFG["univariate_test"]  = args.univariate
     CFG["checkpoint_name"]  = args.checkpoint_name
+    CFG["train_icme_lists"] = args.train_icme_lists
+    CFG["val_icme_lists"]   = args.val_icme_lists
+    CFG["test_icme_lists"]  = args.test_icme_lists
     
     if args.model_name:
         CFG["model_name"] = args.model_name

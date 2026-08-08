@@ -3,7 +3,7 @@
 Scraper for the Caltech ACE ICME catalog:
   https://izw1.caltech.edu/ACE/ASC/DATA/level3/icmetable2.htm
 
-Outputs: icme_catalog.csv in the same directory as this script.
+Outputs: cr_icme_catalogue.csv in data/ directory.
 
 Requirements:
     pip install requests beautifulsoup4
@@ -101,7 +101,7 @@ def main():
     rows = parse_table(soup)
     print(f"Parsed {len(rows)} data rows.")
 
-    out_file = "data/icme_catalog.csv"
+    out_file = "data/cr_icme_catalogue.csv"
     with open(out_file, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=COLUMNS)
         writer.writeheader()

@@ -22,7 +22,7 @@ if default_cache_path.exists():
 
 import torch
 # Import required functions from existing evaluators
-from experiments.loaders import read_omni_cache, get_cr_icme_dataframe, engineer_features, make_datasets, OmniPatchDataset, build_icme_intervals, load_f107_index
+from experiments.loaders import read_omni_cache, get_icme_intervals_from_lists, engineer_features, make_datasets, OmniPatchDataset, load_f107_index
 from experiments.visualize import plot_combined_predictions, plot_gap_histogram
 from experiments.plot_utils import plot_combined_prc_merged, plot_combined_roc_patch, plot_combined_prc_patch, plot_combined_logit_slice
 from experiments.event_eval import evaluate_events
@@ -47,7 +47,7 @@ from experiments.xgboost_evaluator import (
     build_backbone_from_config as xgb_build_backbone
 )
 
-def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = True, use_existing_checkpoints: bool = False, logitplot_start_date: str = '2015-07-01', logitplot_end_date: str = '2016-07-01', preloaded_omni: pd.DataFrame = None, merge_threshold=4, iou_threshold=0.30, conf_agg='max'):
+def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = True, use_existing_checkpoints: bool = False, logitplot_start_date: str = '2015-07-01', logitplot_end_date: str = '2016-07-01', preloaded_omni: pd.DataFrame = None, merge_threshold=4, iou_threshold=0.30, conf_agg='max', train_icme_lists=["cr"], test_icme_lists=["cr"]):
     out_dir = checkpoint_path.parent
     
     chkpts_dir = out_dir / "checkpoints"
@@ -61,6 +61,8 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
     misc_dir = out_dir / "misc" / "icme_pred_gaps"
     misc_dir.mkdir(parents=True, exist_ok=True)
     misc_dir.mkdir(parents=True, exist_ok=True)
+    
+    title_suffix = f" (Train: {','.join(train_icme_lists)} | Test: {','.join(test_icme_lists)})"
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
@@ -92,12 +94,15 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
         omni_full = read_omni_cache(cache_path)
 
     omni_df   = omni_full.loc[str(cfg["omni_start"]) : str(cfg["omni_end"])].copy()
-    cr_icmes  = get_cr_icme_dataframe(cfg["omni_start"], cfg["omni_end"], cfg["icme_catalog_path"])
+
+    train_intervals = get_icme_intervals_from_lists(train_icme_lists, cfg["omni_start"], cfg["omni_end"])
+    val_intervals = get_icme_intervals_from_lists(train_icme_lists, cfg["omni_start"], cfg["omni_end"])
+    test_intervals = get_icme_intervals_from_lists(test_icme_lists, cfg["omni_start"], cfg["omni_end"])
 
     omni_df = engineer_features(omni_df, cfg)
 
     train_ds, val_ds, test_ds, new_scaler = make_datasets(
-        omni_df, cr_icmes, feature_cols, cfg, scaler=None
+        omni_df, train_intervals, val_intervals, test_intervals, feature_cols, cfg, scaler=None
     )
     scaler = new_scaler
 
@@ -107,7 +112,7 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
     omni_dflogits.interpolate(limit=6, limit_direction="both", inplace=True)
     omni_dflogits.fillna(0.0, inplace=True)
     datalogits = scaler.transform(omni_dflogits[feature_cols].values).astype(np.float32)
-    icme_intervalslogits = build_icme_intervals(cr_icmes)
+    icme_intervalslogits = get_icme_intervals_from_lists(test_icme_lists, cfg["omni_start"], cfg["omni_end"])
     dslogits = OmniPatchDataset(
         datalogits, omni_dflogits.index,
         icme_intervals=icme_intervalslogits,
@@ -181,13 +186,15 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
             y_te_cnn, res["CNN on latent"]["y_pred"], 
             str(misc_dir / f"true_gaps.png"), 
             str(misc_dir / f"{ckpt_name}_cnn_latent_gaps.png"), 
-            "CNN Latent"
+            "CNN Latent",
+            title_suffix=title_suffix
         )
         plot_gap_histogram(
             y_te_raw_cnn, res["CNN on raw (baseline)"]["y_pred"], 
             str(misc_dir / f"true_gaps.png"), 
             str(misc_dir / f"{ckpt_name}_cnn_raw_gaps.png"), 
-            "CNN Raw"
+            "CNN Raw",
+            title_suffix=title_suffix
         )
 
         # (Plots are now handled jointly at the end)
@@ -259,7 +266,8 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
             y_te_xgb, res["XGBoost on latent"]["y_pred"], 
             str(misc_dir / f"true_gaps.png"), 
             str(misc_dir / f"{ckpt_name}_xgb_latent_gaps.png"), 
-            "XGBoost Latent"
+            "XGBoost Latent",
+            title_suffix=title_suffix
         )
         # (Plots are now handled jointly at the end)
 
@@ -294,7 +302,8 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
             y_te_raw_xgb, res["XGBoost on raw (baseline)"]["y_pred"], 
             str(misc_dir / f"true_gaps.png"), 
             str(misc_dir / f"{ckpt_name}_xgb_raw_gaps.png"), 
-            "XGBoost Raw"
+            "XGBoost Raw",
+            title_suffix=title_suffix
         )
 
         # (Plots are now handled jointly at the end)
@@ -330,21 +339,21 @@ def run_evaluation(checkpoint_path: Path, run_cnn: bool = True, run_xgb: bool = 
     print("\n=== Generating Combined Plots ===")
     plot_combined_predictions(
         test_ds, res, str(test_pred_dir / f"{ckpt_name}_merged.png"),
-        is_patch=False, merge_threshold=merge_threshold, iou_threshold=iou_threshold, conf_agg=conf_agg
+        is_patch=False, merge_threshold=merge_threshold, iou_threshold=iou_threshold, conf_agg=conf_agg, title_suffix=title_suffix
     )
     plot_combined_predictions(
         test_ds, res, str(test_pred_dir / f"{ckpt_name}_patch.png"),
-        is_patch=True, merge_threshold=merge_threshold, iou_threshold=iou_threshold, conf_agg=conf_agg
+        is_patch=True, merge_threshold=merge_threshold, iou_threshold=iou_threshold, conf_agg=conf_agg, title_suffix=title_suffix
     )
     
     plot_combined_prc_merged(
         res, str(roc_prc_dir / f"{ckpt_name}_prc_merged.png"),
-        merge_threshold=merge_threshold, iou_threshold=iou_threshold, conf_agg=conf_agg
+        merge_threshold=merge_threshold, iou_threshold=iou_threshold, conf_agg=conf_agg, title_suffix=title_suffix
     )
-    plot_combined_roc_patch(res, str(roc_prc_dir / f"{ckpt_name}_roc_patch.png"))
-    plot_combined_prc_patch(res, str(roc_prc_dir / f"{ckpt_name}_prc_patch.png"))
+    plot_combined_roc_patch(res, str(roc_prc_dir / f"{ckpt_name}_roc_patch.png"), title_suffix=title_suffix)
+    plot_combined_prc_patch(res, str(roc_prc_dir / f"{ckpt_name}_prc_patch.png"), title_suffix=title_suffix)
     
-    plot_combined_logit_slice(dslogits, logit_probs, str(slice_dir / f"{ckpt_name}_logits.png"), logitplot_start_date, logitplot_end_date)
+    plot_combined_logit_slice(dslogits, logit_probs, str(slice_dir / f"{ckpt_name}_logits.png"), logitplot_start_date, logitplot_end_date, title_suffix=title_suffix)
     
     return res, test_ds
 
@@ -440,6 +449,8 @@ if __name__ == "__main__":
     parser.add_argument("--merge_threshold", type=int, default=4, help="Window length in patches to merge predictions (default 4)")
     parser.add_argument("--iou_threshold", type=float, default=0.30, help="IoU threshold for evaluating TPs, FPs (default 0.30)")
     parser.add_argument("--conf_agg", type=str, default="max", choices=["max", "mean", "median"], help="Aggregation function for confidence score (default max)")
+    parser.add_argument("--train_icme_lists", nargs="+", default=None, help="List of train ICME catalogs (cr, jian, lepping, chi, nieves)")
+    parser.add_argument("--test_icme_lists", nargs="+", default=None, help="List of test ICME catalogs (cr, jian, lepping, chi, nieves)")
     args = parser.parse_args()
     
     if not args.cnn and not args.xgb:
@@ -453,6 +464,9 @@ if __name__ == "__main__":
     
     package = torch.load(ckpt_path, map_location=device, weights_only=False)
     cfg = package["cfg"]
+    
+    train_lists = args.train_icme_lists if args.train_icme_lists else ["cr"]
+    test_lists = args.test_icme_lists if args.test_icme_lists else ["cr"]
     
     val_end_dt = pd.to_datetime(cfg["val_end"])
     omni_end_dt = pd.to_datetime(cfg["omni_end"])
@@ -481,7 +495,9 @@ if __name__ == "__main__":
         preloaded_omni=preloaded_omni,
         merge_threshold=args.merge_threshold,
         iou_threshold=args.iou_threshold,
-        conf_agg=args.conf_agg
+        conf_agg=args.conf_agg,
+        train_icme_lists=train_lists,
+        test_icme_lists=test_lists
     )
     
     # Call the debug function so the user can see it right now (they can comment it out later)

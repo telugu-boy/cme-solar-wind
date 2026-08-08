@@ -9,7 +9,7 @@ from __future__ import annotations
 import warnings
 from datetime import date as Date
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -77,33 +77,78 @@ def read_omni_cache(cache_path: Path) -> pd.DataFrame:
     return df
 
 
-def get_cr_icme_dataframe(
+def get_icme_intervals_from_lists(
+    catalog_names: Union[str, list[str]],
     start: Optional[Date] = None,
     end: Optional[Date] = None,
-    path: str = "data/icme_catalog.csv",
-) -> pd.DataFrame:
-    cr = pd.read_csv(path)
-    time_cols = [
-        "disturbance_datetime_ut",
-        "icme_plasma_field_start_ut",
-        "icme_plasma_field_end_ut",
-    ]
-    for col in time_cols:
-        cr[col] = pd.to_datetime(
-            cr[col].astype(str).str.replace(r"\(.*\)", "", regex=True).str.strip(),
-            format="%Y/%m/%d %H%M",
-            errors="coerce",
-        )
-        if cr[col].dt.tz is not None:
-            cr[col] = cr[col].dt.tz_localize(None)
-    int_cols = ["comp_start_hrs", "comp_end_hrs", "mc_start_hrs", "mc_end_hrs"]
-    cr[int_cols] = (
-        cr[int_cols].apply(pd.to_numeric, errors="coerce").astype("Int64")
-    )
-    if start is not None and end is not None:
-        s, e = pd.to_datetime(start), pd.to_datetime(end)
-        cr = cr[cr["disturbance_datetime_ut"].between(s, e)]
-    return cr
+) -> list[tuple[np.datetime64, np.datetime64]]:
+    """
+    Reads one or more ICME catalogues (can be a comma-separated string 'cr,jian' or a list ['cr', 'jian']) 
+    and returns the union of their ICME intervals between start and end dates.
+    """
+    if not catalog_names:
+        return []
+        
+    if isinstance(catalog_names, str):
+        names = [n.strip() for n in catalog_names.split(",")]
+    else:
+        names = [n.strip() for n in catalog_names]
+        
+    all_intervals = []
+    
+    for name in names:
+        path = f"data/{name}_icme_catalogue.csv"
+        df = pd.read_csv(path)
+        time_cols = [
+            "icme_plasma_field_start_ut",
+            "icme_plasma_field_end_ut",
+        ]
+        for col in time_cols:
+            df[col] = pd.to_datetime(
+                df[col].astype(str).str.replace(r"\(.*\)", "", regex=True).str.strip(),
+                format="mixed",
+                errors="coerce",
+            )
+            if df[col].dt.tz is not None:
+                df[col] = df[col].dt.tz_localize(None)
+                
+        if "disturbance_datetime_ut" in df.columns:
+             df["disturbance_datetime_ut"] = pd.to_datetime(
+                 df["disturbance_datetime_ut"].astype(str).str.replace(r"\(.*\)", "", regex=True).str.strip(),
+                 format="mixed",
+                 errors="coerce",
+             )
+             if df["disturbance_datetime_ut"].dt.tz is not None:
+                 df["disturbance_datetime_ut"] = df["disturbance_datetime_ut"].dt.tz_localize(None)
+             
+             if start is not None and end is not None:
+                 s, e = pd.to_datetime(start), pd.to_datetime(end)
+                 df = df[df["disturbance_datetime_ut"].between(s, e)]
+        else:
+             if start is not None and end is not None:
+                 s, e = pd.to_datetime(start), pd.to_datetime(end)
+                 df = df[df["icme_plasma_field_start_ut"].between(s, e)]
+                 
+        for _, row in df[["icme_plasma_field_start_ut", "icme_plasma_field_end_ut"]].dropna().iterrows():
+            all_intervals.append((
+                np.datetime64(row["icme_plasma_field_start_ut"]),
+                np.datetime64(row["icme_plasma_field_end_ut"]),
+            ))
+            
+    # Sort and take union of intervals
+    if not all_intervals:
+        return []
+    
+    all_intervals.sort(key=lambda x: x[0])
+    unioned = [all_intervals[0]]
+    for current_start, current_end in all_intervals[1:]:
+        last_start, last_end = unioned[-1]
+        if current_start <= last_end:
+            unioned[-1] = (last_start, max(last_end, current_end))
+        else:
+            unioned.append((current_start, current_end))
+            
+    return unioned
 
 
 def engineer_features(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
@@ -190,16 +235,7 @@ def select_feature_cols(df: pd.DataFrame, cfg: dict) -> list[str]:
     return [c for c in cols if c in df.columns]
 
 
-def build_icme_intervals(cr_icmes: pd.DataFrame) -> list[tuple[np.datetime64, np.datetime64]]:
-    intervals = []
-    for _, row in cr_icmes[
-        ["icme_plasma_field_start_ut", "icme_plasma_field_end_ut"]
-    ].dropna().iterrows():
-        intervals.append((
-            np.datetime64(row["icme_plasma_field_start_ut"]),
-            np.datetime64(row["icme_plasma_field_end_ut"]),
-        ))
-    return intervals
+
 
 
 class OmniPatchDataset(Dataset):
@@ -360,7 +396,9 @@ class VectorizedGPULoader:
 
 def make_datasets(
     omni_df: pd.DataFrame,
-    cr_icmes: pd.DataFrame,
+    train_intervals: list[tuple[np.datetime64, np.datetime64]],
+    val_intervals: list[tuple[np.datetime64, np.datetime64]],
+    test_intervals: list[tuple[np.datetime64, np.datetime64]],
     feature_cols: list[str],
     cfg: dict,
     scaler: Optional[RobustScaler] = None,
@@ -391,10 +429,9 @@ def make_datasets(
     val_data   = scaler.transform(val_df.values).astype(np.float32)
     test_data  = scaler.transform(test_df.values).astype(np.float32)
 
-    icme_intervals = build_icme_intervals(cr_icmes)
+
 
     kwargs = dict(
-        icme_intervals=icme_intervals,
         context_length=cfg["context_length"],
         prediction_length=cfg["prediction_length"],
         patch_length=cfg["patch_length"],
@@ -403,9 +440,9 @@ def make_datasets(
         window_stride=cfg["window_stride"],
     )
 
-    train_ds = OmniPatchDataset(train_data, train_df.index, **kwargs)
-    val_ds   = OmniPatchDataset(val_data,   val_df.index,   **kwargs)
-    test_ds  = OmniPatchDataset(test_data,  test_df.index,  **kwargs)
+    train_ds = OmniPatchDataset(train_data, train_df.index, icme_intervals=train_intervals, **kwargs)
+    val_ds   = OmniPatchDataset(val_data,   val_df.index,   icme_intervals=val_intervals, **kwargs)
+    test_ds  = OmniPatchDataset(test_data,  test_df.index,  icme_intervals=test_intervals, **kwargs)
 
     print(
         f"[dataset] train={len(train_ds):,}  val={len(val_ds):,}  "

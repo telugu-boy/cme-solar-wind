@@ -8,7 +8,7 @@ from datetime import datetime, date as Date
 from typing import Optional
 
 def get_cr_icme_dataframe(start:Optional[Date]=None, end:Optional[Date]=None):
-    cr_icmes = pd.read_csv("data/icme_catalog.csv")
+    cr_icmes = pd.read_csv("data/cr_icme_catalogue.csv")
 
     time_cols = ['disturbance_datetime_ut', 'icme_plasma_field_start_ut', 'icme_plasma_field_end_ut']
 
