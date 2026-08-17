@@ -411,9 +411,9 @@ def make_datasets(
     train_end = pd.to_datetime(cfg["train_end"])
     val_end   = pd.to_datetime(cfg["val_end"])
 
-    train_df = omni_df.loc[: str(cfg["train_end"])][feature_cols].copy()
-    val_df   = omni_df.loc[str(cfg["train_end"]) : str(cfg["val_end"])][feature_cols].copy()
-    test_df  = omni_df.loc[str(cfg["val_end"]) :][feature_cols].copy()
+    train_df = omni_df[omni_df.index < train_end][feature_cols].copy()
+    val_df   = omni_df[(omni_df.index >= train_end) & (omni_df.index < val_end)][feature_cols].copy()
+    test_df  = omni_df[omni_df.index >= val_end][feature_cols].copy()
 
     # Interpolate small gaps (keep same convention as OmniWindowDataset)
     for df in (train_df, val_df, test_df):
