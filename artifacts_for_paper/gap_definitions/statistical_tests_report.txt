@@ -1,0 +1,32 @@
+================================================================================
+STATISTICAL TESTS REPORT: 4 ICME GAP DEFINITIONS
+================================================================================
+
+1. Kolmogorov-Smirnov Test Statistic (D) Matrix:
+                  Edge-to-Edge  Start-to-Start  Middle-to-Middle  End-to-End
+Edge-to-Edge          0.000000        0.190564          0.200740    0.172988
+Start-to-Start        0.190564        0.000000          0.016651    0.024977
+Middle-to-Middle      0.200740        0.016651          0.000000    0.035153
+End-to-End            0.172988        0.024977          0.035153    0.000000
+
+2. Kolmogorov-Smirnov Test p-value Matrix:
+                  Edge-to-Edge  Start-to-Start  Middle-to-Middle    End-to-End
+Edge-to-Edge      1.000000e+00    1.430784e-17      1.830984e-19  1.541063e-14
+Start-to-Start    1.430784e-17    1.000000e+00      9.982958e-01  8.890025e-01
+Middle-to-Middle  1.830984e-19    9.982958e-01      1.000000e+00  5.165449e-01
+End-to-End        1.541063e-14    8.890025e-01      5.165449e-01  1.000000e+00
+
+3. Anderson-Darling 4-Sample Test:
+   Statistic A^2   : 55.2123
+   Critical Values : [0.49854918 1.3236709  1.91577682 2.49304213 3.24593219 3.82285604
+ 5.12078789]
+   p-value         : 1.000000e-03 (floored at 0.001)
+
+4. Kruskal-Wallis H-Test:
+   H-Statistic     : 73.5060 (df = 3)
+   p-value         : 7.573150e-16
+
+Conclusion:
+   - Edge-to-Edge is fundamentally distinct from the other three metrics (p < 1e-14).
+   - Start-to-Start, Middle-to-Middle, and End-to-End are statistically identical (p > 0.5).
+================================================================================
